@@ -1,1 +1,69 @@
 .env
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+/tests/__pycache__/
+/utils/__pycache__/
+
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+*.egg
+
+# Virtual environments
+.envs/
+.venv/
+venv/
+ENV/
+env/
+
+# VS Code and editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Pytest cache
+.pytest_cache/
+
+# MyPy
+.mypy_cache/
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+
+# Logs
+*.log
+
+# Local python environment marker
+.Python
+
+# Wheel
+*.whl
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints
+
+# Local settings, credentials and secrets
+local_settings.py
+secrets.yml
+
+# Sphinx build
+_build/
+
+# Editor temporary files
+*~
+

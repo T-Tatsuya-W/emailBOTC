@@ -1,473 +1,363 @@
-"""
-Email Handler - Isolated email functionality for sending and receiving emails.
+"""Email handler utility.
 
-This module provides a simple interface for:
-1. Sending emails
-2. Waiting for and receiving responses from specific recipients with specific subjects
+This module provides EmailHandler which can send emails over SMTP and
+check for unread messages via IMAP. Configuration is read from a `.env`
+file via python-dotenv. Assumed environment variable names:
+
+- EMAIL_ADDRESS - the sending account email address
+- EMAIL_APP_PASSWORD - the app password for SMTP/IMAP authentication
+- SMTP_SERVER - SMTP server hostname (e.g. smtp.gmail.com)
+- SMTP_PORT - SMTP server port (defaults to 587)
+- IMAP_SERVER - IMAP server hostname (e.g. imap.gmail.com)
+- IMAP_PORT - IMAP server port (defaults to 993)
+
+You may also pass these values to the EmailHandler constructor to override
+the env values.
 """
+
+from __future__ import annotations
+
 import os
-import time
-import imaplib
 import smtplib
+import imaplib
+import email
 import re
-from typing import Optional, Dict
-from email.mime.text import MIMEText
-from email.header import decode_header
-from email.utils import parseaddr
-import email as email_lib
+from email.message import EmailMessage
+from typing import List, Dict, Optional
+
 from dotenv import load_dotenv
+
 
 load_dotenv()
 
 
 class EmailHandler:
-    """
-    Handles email sending and receiving with response tracking.
-    
-    This class provides a unified interface for email operations including
-    sending emails and waiting for responses from specific recipients.
-    """
-    
-    def __init__(self, poll_interval: int = 5, timeout: int = 30):
-        """
-        Initialize the EmailHandler.
-        
-        Args:
-            poll_interval: Seconds to wait between checking for new emails (default: 5)
-            timeout: Timeout in seconds for SMTP operations (default: 30)
-        """
-        self.poll_interval = poll_interval
-        self.smtp_timeout = timeout
-        self.imap_connection = None
-        
-        # Load email credentials from environment
-        self.email_address = self._get_email_address()
-        self.email_password = self._get_email_password()
-        self.smtp_host = os.getenv("SMTP_HOST") or os.getenv("SMTP_SERVER") or "smtp.gmail.com"
-        self.smtp_port = int(os.getenv("SMTP_PORT", 587))
-        self.imap_host = os.getenv("IMAP_HOST") or os.getenv("IMAP_SERVER") or "imap.gmail.com"
-        self.imap_port = int(os.getenv("IMAP_PORT") or os.getenv("IMAP_SSL_PORT") or "993")
-    
-    def _get_email_address(self) -> str:
-        """Get email address from environment variables."""
-        return (
-            os.getenv("IMAP_USER")
-            or os.getenv("IMAP_USERNAME")
-            or os.getenv("IMAP_EMAIL")
-            or os.getenv("EMAIL_ADDRESS")
-        )
-    
-    def _get_email_password(self) -> str:
-        """Get email password from environment variables."""
-        return (
-            os.getenv("IMAP_PASS")
-            or os.getenv("IMAP_PASSWORD")
-            or os.getenv("IMAP_PWD")
-            or os.getenv("EMAIL_PASSWORD")
-        )
-    
-    def send_email(self, to_email: str, subject: str, body: str) -> bool:
-        """
-        Send an email to a recipient.
-        
-        Args:
-            to_email: Recipient's email address
-            subject: Email subject line
-            body: Email body text (plain text)
-        
-        Returns:
-            True if email was sent successfully, False otherwise
-        
-        Raises:
-            ValueError: If email credentials are not configured
-            smtplib.SMTPException: If sending fails
-        """
-        if not self.email_address or not self.email_password:
-            raise ValueError(
-                "Email credentials not configured. Set EMAIL_ADDRESS and EMAIL_PASSWORD "
-                "environment variables or provide IMAP_USER/IMAP_PASS credentials."
-            )
-        
-        try:
-            # Create the message
-            msg = MIMEText(body or "", _subtype="plain", _charset="utf-8")
-            msg["From"] = self.email_address
-            msg["To"] = to_email
-            msg["Subject"] = subject or ""
-            
-            # Send via SMTP
-            with smtplib.SMTP(self.smtp_host, self.smtp_port, timeout=self.smtp_timeout) as smtp:
-                smtp.ehlo()
-                try:
-                    smtp.starttls()
-                    smtp.ehlo()
-                except Exception:
-                    pass  # If STARTTLS fails, continue (may fail at login)
-                
-                smtp.login(self.email_address, self.email_password)
-                smtp.send_message(msg)
-            
-            return True
-            
-        except Exception as e:
-            raise smtplib.SMTPException(f"Failed to send email: {e}")
-    
-    def wait_for_response(
-        self, 
-        from_email: str, 
-        expected_subject: str,
-        timeout_seconds: Optional[int] = None,
-        mark_as_read: bool = True
-    ) -> Optional[Dict[str, str]]:
-        """
-        Send an email and wait for a response from a specific recipient with a specific subject.
-        
-        Args:
-            from_email: Email address of the expected sender
-            expected_subject: Expected subject line (will be normalized to ignore Re:/Fw: prefixes)
-            timeout_seconds: Maximum time to wait for response in seconds (None = wait indefinitely)
-            mark_as_read: Whether to mark the message as read once received (default: True)
-        
-        Returns:
-            Dictionary with keys 'from', 'subject', 'body', 'uid' if response found, None if timeout
-        
-        Raises:
-            ValueError: If email credentials are not configured
-            SystemExit: If IMAP connection fails
-        """
-        if not self.email_address or not self.email_password:
-            raise ValueError(
-                "Email credentials not configured. Set EMAIL_ADDRESS and EMAIL_PASSWORD "
-                "environment variables or provide IMAP_USER/IMAP_PASS credentials."
-            )
-        
-        # Connect to IMAP
-        imap = self._connect_imap()
-        
-        # Normalize the expected subject
-        normalized_expected = self._normalize_subject(expected_subject)
-        
-        start_time = time.time()
-        check_count = 0
-        
-        try:
-            while True:
-                check_count += 1
-                elapsed = time.time() - start_time
-                
-                # Refresh connection to get latest messages from server
-                try:
-                    imap.noop()
-                except Exception as e:
-                    print(f"Warning: IMAP noop failed: {e}")
-                
-                # Fetch unseen messages
-                messages = self._fetch_unseen_messages(imap)
-                
-                if check_count == 1:
-                    print(f"Starting to wait for response from {from_email}")
-                    print(f"  Expected subject (normalized): '{normalized_expected}'")
-                    print(f"  Poll interval: {self.poll_interval}s")
-                    if timeout_seconds:
-                        print(f"  Timeout: {timeout_seconds}s")
-                
-                if check_count % 5 == 0:  # Print status every 5 checks
-                    print(f"Still waiting... (checked {check_count} times, {elapsed:.1f}s elapsed)")
-                
-                for msg in messages:
-                    msg_from = (msg.get('from') or '').strip().lower()
-                    msg_subject = msg.get('subject') or ''
-                    msg_body = msg.get('body') or ''
-                    msg_uid = msg.get('uid')
-                    
-                    # Debug: print all messages being checked
-                    normalized_subject = self._normalize_subject(msg_subject)
-                    print(f"  Checking message from: {msg_from}, subject: '{normalized_subject}'")
-                    
-                    # Check if this message is from the expected sender
-                    if msg_from == from_email.strip().lower():
-                        # Check if subject matches (normalized)
-                        if normalized_subject == normalized_expected:
-                            # Found the response!
-                            print(f"✓ Found matching response!")
-                            if mark_as_read:
-                                self._mark_seen(imap, msg_uid)
-                            
-                            return {
-                                'from': msg.get('from'),
-                                'subject': msg_subject,
-                                'body': msg_body,
-                                'uid': msg_uid
-                            }
-                        else:
-                            # Not the right subject, mark as seen to avoid re-processing
-                            print(f"  → Subject doesn't match (expected '{normalized_expected}', got '{normalized_subject}')")
-                            if mark_as_read:
-                                self._mark_seen(imap, msg_uid)
-                    else:
-                        # Not from the expected sender, mark as seen
-                        print(f"  → Sender doesn't match (expected '{from_email.strip().lower()}')")
-                        if mark_as_read:
-                            self._mark_seen(imap, msg_uid)
-                
-                # Check timeout AFTER checking messages
-                if timeout_seconds and (time.time() - start_time) > timeout_seconds:
-                    print(f"✗ Timeout reached after {elapsed:.1f}s ({check_count} checks)")
-                    return None
-                
-                # Wait before checking again
-                time.sleep(self.poll_interval)
-                
-        finally:
-            self._close_imap(imap)
-    
-    def send_and_wait_for_response(
-        self,
-        to_email: str,
-        subject: str,
-        body: str,
-        timeout_seconds: Optional[int] = None,
-        mark_as_read: bool = True
-    ) -> Optional[Dict[str, str]]:
-        """
-        Send an email and wait for a response from the recipient with the same subject.
-        
-        Args:
-            to_email: Recipient's email address
-            subject: Email subject line
-            body: Email body text
-            timeout_seconds: Maximum time to wait for response in seconds (None = wait indefinitely)
-            mark_as_read: Whether to mark the response as read once received (default: True)
-        
-        Returns:
-            Dictionary with keys 'from', 'subject', 'body', 'uid' if response received, None if timeout
-        
-        Raises:
-            ValueError: If email credentials are not configured
-            smtplib.SMTPException: If sending fails
-            SystemExit: If IMAP connection fails
-        """
-        # Send the email first
-        print(f"Sending email to {to_email}")
-        print(f"  Subject: {subject}")
-        self.send_email(to_email, subject, body)
-        print(f"✓ Email sent successfully")
-        
-        # Give the email server a moment to process the sent email
-        # This helps avoid timing issues where we check for response too quickly
-        print(f"Waiting {self.poll_interval}s before checking for responses...")
-        time.sleep(self.poll_interval)
-        
-        # Wait for response
-        return self.wait_for_response(to_email, subject, timeout_seconds, mark_as_read)
-    
-    def _connect_imap(self) -> imaplib.IMAP4_SSL:
-        """Connect to IMAP server and select INBOX."""
-        try:
-            imap = imaplib.IMAP4_SSL(self.imap_host, self.imap_port)
-            imap.login(self.email_address, self.email_password)
-            imap.select("INBOX")
-            return imap
-        except Exception as exc:
-            raise SystemExit(f"IMAP connection failed: {exc}")
-    
-    def _fetch_unseen_messages(self, imap: imaplib.IMAP4_SSL) -> list:
-        """
-        Fetch all unseen messages from INBOX.
-        
-        Returns:
-            List of dictionaries with keys: 'uid', 'from', 'subject', 'body'
-        """
-        messages = []
-        
-        try:
-            status, data = imap.uid('search', None, 'UNSEEN')
-            
-            if status != "OK" or not data or not data[0]:
-                return messages
-            
-            for uid_bytes in data[0].split():
-                uid = uid_bytes.decode() if isinstance(uid_bytes, bytes) else str(uid_bytes)
-                status, fetch_data = imap.uid('fetch', uid, '(RFC822)')
-                
-                if status != "OK" or not fetch_data:
-                    continue
-                
-                raw = fetch_data[0][1]
-                if not raw:
-                    continue
-                
-                msg = email_lib.message_from_bytes(raw)
-                from_addr = parseaddr(self._decode_header(msg.get("From")))[1]
-                subject = self._decode_header(msg.get("Subject"))
-                body = self._extract_body(msg)
-                
-                messages.append({
-                    "uid": uid,
-                    "from": from_addr,
-                    "subject": subject,
-                    "body": body
-                })
-        
-        except Exception as exc:
-            print(f"Error fetching messages: {exc}")
-        
-        return messages
-    
-    def _mark_seen(self, imap: imaplib.IMAP4_SSL, uid: str) -> None:
-        """Mark a message as seen by UID."""
-        try:
-            imap.uid('store', uid, '+FLAGS', '(\\Seen)')
-        except Exception:
-            pass
-    
-    def _close_imap(self, imap: imaplib.IMAP4_SSL) -> None:
-        """Close IMAP connection."""
-        if imap:
-            try:
-                imap.logout()
-            except Exception:
-                pass
-    
-    @staticmethod
-    def _decode_header(value: Optional[str]) -> str:
-        """Decode a possibly MIME-encoded header value to a unicode string."""
-        if value is None:
-            return ""
-        
-        parts = decode_header(value)
-        decoded = ""
-        for part, enc in parts:
-            if isinstance(part, bytes):
-                decoded += part.decode(enc or "utf-8", errors="replace")
-            else:
-                decoded += part
-        return decoded
-    
-    @staticmethod
-    def _extract_body(msg: email_lib.message.Message) -> str:
-        """Extract plain text body from email message."""
-        body = ""
-        
-        if msg.is_multipart():
-            for part in msg.walk():
-                ctype = part.get_content_type()
-                disp = str(part.get("Content-Disposition") or "")
-                
-                if ctype == "text/plain" and "attachment" not in disp:
-                    payload = part.get_payload(decode=True)
-                    if payload is None:
-                        continue
-                    
-                    charset = part.get_content_charset() or "utf-8"
-                    try:
-                        body = payload.decode(charset, errors="replace")
-                    except Exception:
-                        body = payload.decode("utf-8", errors="replace")
-                    break
-        else:
-            payload = msg.get_payload(decode=True)
-            if payload:
-                charset = msg.get_content_charset() or "utf-8"
-                try:
-                    body = payload.decode(charset, errors="replace")
-                except Exception:
-                    body = payload.decode("utf-8", errors="replace")
-        
-        return body
-    
-    @staticmethod
-    def _normalize_subject(subject: Optional[str]) -> str:
-        """
-        Normalize subject by stripping common reply/forward prefixes and converting to lowercase.
-        
-        This allows matching subjects like "Test" with "Re: Test" or "Fw: Re: Test"
-        """
-        if not subject:
-            return ""
-        
-        s = subject.strip()
-        prefix_re = re.compile(r'^(?:\s*(?:re|fw|fwd)\s*[:\-]\s*)+', flags=re.IGNORECASE)
-        s = prefix_re.sub("", s).strip()
-        return s.lower()
+	"""Simple email handler to send and check unread emails.
+
+	Constructor arguments override values from the environment. If a
+	required value is still missing, methods will raise ValueError.
+	"""
+
+	def __init__(
+		self,
+		email_address: Optional[str] = None,
+		app_password: Optional[str] = None,
+		smtp_server: Optional[str] = None,
+		smtp_port: Optional[int] = None,
+		imap_server: Optional[str] = None,
+		imap_port: Optional[int] = None,
+	) -> None:
+		self.email_address = email_address or os.getenv("EMAIL_ADDRESS")
+		self.app_password = app_password or os.getenv("EMAIL_APP_PASSWORD")
+		self.smtp_server = smtp_server or os.getenv("SMTP_SERVER")
+		self.smtp_port = int(smtp_port or os.getenv("SMTP_PORT") or 587)
+		self.imap_server = imap_server or os.getenv("IMAP_SERVER")
+		self.imap_port = int(imap_port or os.getenv("IMAP_PORT") or 993)
+
+	def _ensure_config(self) -> None:
+		missing = []
+		if not self.email_address:
+			missing.append("EMAIL_ADDRESS")
+		if not self.app_password:
+			missing.append("EMAIL_APP_PASSWORD")
+		if not self.smtp_server:
+			missing.append("SMTP_SERVER")
+		if not self.imap_server:
+			missing.append("IMAP_SERVER")
+		if missing:
+			raise ValueError(f"Missing email configuration: {', '.join(missing)}")
+
+	def _clean_body(self, body: str) -> str:
+		"""Clean a message body by removing quoted reply blocks and leading quote markers.
+
+		This attempts to detect common reply separators such as lines like
+		"On Fri, 31 Oct 2025 at 22:48, Name <a@b.com> wrote:" or
+		"-----Original Message-----" and truncates the body at that point.
+		After truncation it removes any lines that start with '>' (common
+		quote marker).
+		"""
+		if not body:
+			return ""
+
+		lines = body.splitlines()
+		# patterns that commonly introduce quoted original messages
+		patterns = [
+			r"^On\s.+wrote:$",
+			r"^-----Original Message-----",
+			r"^From:\s",
+			r"^Sent:\s",
+			r"^Subject:\s",
+			r"^To:\s",
+		]
+
+		cut_index = None
+		for i, line in enumerate(lines):
+			s = line.strip()
+			for pat in patterns:
+				try:
+					if re.match(pat, s, flags=re.IGNORECASE):
+						cut_index = i
+						break
+				except Exception:
+					continue
+			if cut_index is not None:
+				break
+
+		if cut_index is not None:
+			lines = lines[:cut_index]
+
+		# remove quoted lines starting with '>' and strip trailing/leading whitespace
+		cleaned = []
+		for ln in lines:
+			if ln.lstrip().startswith('>'):
+				continue
+			cleaned.append(ln)
+
+		return "\n".join(cleaned).strip()
+
+	def send_email(
+		self,
+		to_address: Optional[str],
+		subject: str,
+		body: str,
+		thread_id: Optional[int] = None,
+		reply_uid: Optional[int] = None,
+	) -> bool:
+		"""Send an email.
+
+		Args:
+			to_address: destination email address (may be None when replying by uid)
+			subject: subject line
+			body: plain-text message body
+
+			thread_id: optional integer thread identifier. If provided, the
+				function will set synthetic `In-Reply-To`/`References` headers
+				so clients can associate this message with an internal thread id.
+
+			reply_uid: optional IMAP UID of an existing message in the INBOX.
+				When provided the function will fetch the original message by
+				UID, extract its Message-ID and Reply-To/From, and use those
+				values to set In-Reply-To/References and default recipient.
+				This is the recommended way to send a stable, in-thread reply.
+
+		Returns:
+			True on success.
+
+		Raises:
+			ValueError if configuration is missing.
+			RuntimeError for SMTP/connection errors.
+		"""
+		self._ensure_config()
+
+		# allow to_address to be None when reply_uid will supply the recipient
+		if to_address is not None and (not isinstance(to_address, str) or not to_address):
+			raise ValueError("to_address must be a non-empty string or None when reply_uid is used")
+
+		msg = EmailMessage()
+		msg["From"] = self.email_address
+		msg["To"] = to_address
+
+		# Ensure subject preserves threading convention
+		final_subject = subject or ""
+
+		# If reply_uid is provided, fetch original message to extract headers
+		if reply_uid is not None:
+			try:
+				with imaplib.IMAP4_SSL(self.imap_server, self.imap_port) as imap:
+					imap.login(self.email_address, self.app_password)
+					imap.select('INBOX')
+					typ, msg_data = imap.uid('fetch', str(int(reply_uid)), '(RFC822)')
+					if typ == 'OK' and msg_data:
+						raw = None
+						for part in msg_data:
+							if isinstance(part, tuple):
+								raw = part[1]
+								break
+						if raw:
+							orig = email.message_from_bytes(raw)
+							orig_msg_id = orig.get('Message-ID')
+							orig_refs = orig.get('References', '')
+							orig_reply_to = orig.get('Reply-To') or orig.get('From')
+							# set default recipient if not provided
+							if not to_address and orig_reply_to:
+								to_address = orig_reply_to
+							# set threading headers from original
+							if orig_msg_id:
+								try:
+									msg['In-Reply-To'] = orig_msg_id
+									# append to existing refs if present
+									refs = (orig_refs + ' ' + orig_msg_id).strip() if orig_refs else orig_msg_id
+									msg['References'] = refs
+								except Exception:
+									pass
+					try:
+						imap.logout()
+					except Exception:
+						pass
+			except Exception as exc:
+				raise RuntimeError(f"Failed to fetch message for reply_uid={reply_uid}: {exc}")
+
+		if thread_id is not None:
+			# prefix Re: if not present
+			if not final_subject.lower().startswith("re:"):
+				final_subject = "Re: " + final_subject
+
+			# construct a synthetic message-id using the sender domain when possible
+			domain = "local"
+			try:
+				if self.email_address and "@" in self.email_address:
+					domain = self.email_address.split("@", 1)[1]
+				elif self.smtp_server:
+					domain = str(self.smtp_server).split(":", 1)[0]
+			except Exception:
+				domain = "local"
+
+			synthetic_id = f"<thread-{int(thread_id)}@{domain}>"
+			try:
+				# only set synthetic headers if they aren't already set by reply_uid handling
+				if 'In-Reply-To' not in msg:
+					msg["In-Reply-To"] = synthetic_id
+				if 'References' not in msg:
+					msg["References"] = synthetic_id
+			except Exception:
+				pass
+
+		msg["Subject"] = final_subject
+		msg.set_content(body or "")
+
+		try:
+			with smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=30) as smtp:
+				# Start TLS if using the usual submission port
+				try:
+					smtp.starttls()
+				except Exception:
+					# Some servers may not require/allow starttls; ignore if it fails
+					pass
+				smtp.login(self.email_address, self.app_password)
+				smtp.send_message(msg)
+		except Exception as exc:  # pragma: no cover - environment-specific
+			raise RuntimeError(f"Failed to send email: {exc}")
+
+		return True
+
+	def check_unread(self, mark_seen: bool = False) -> List[Dict[str, str]]:
+		"""Check for unread messages in INBOX.
+
+		Args:
+			mark_seen: if True, mark messages as seen on the server.
+
+		Returns:
+			A list of dictionaries with keys: 'id', 'uid', 'from', 'subject', 'date', 'snippet'.
+			- 'id' is the IMAP sequence number (string).
+			- 'uid' is the IMAP UID (int) which is the stable identifier you should
+			  prefer if you need to refer to the same message later across sessions.
+
+		Raises:
+			ValueError if configuration is missing.
+			RuntimeError for IMAP/connection errors.
+		"""
+		self._ensure_config()
+
+		results: List[Dict[str, str]] = []
+
+		try:
+			# Use SSL IMAP
+			with imaplib.IMAP4_SSL(self.imap_server, self.imap_port) as imap:
+				imap.login(self.email_address, self.app_password)
+				imap.select("INBOX")
+
+				# We'll request both sequence numbers and UIDs for unseen messages
+				# Sequence numbers are useful for immediate session ops; UIDs are
+				# stable across sessions and are recommended for long-term references.
+				typ_seq, data_seq = imap.search(None, "UNSEEN")
+				if typ_seq != "OK":
+					return results
+				ids_seq = data_seq[0].split() if data_seq and data_seq[0].strip() else []
+
+				# UID search
+				typ_uid, data_uid = imap.uid('search', None, 'UNSEEN')
+				if typ_uid != 'OK':
+					# fall back to sequence-only handling
+					uids = []
+				else:
+					uids = data_uid[0].split() if data_uid and data_uid[0].strip() else []
+
+				# iterate zipped lists; if lengths differ we iterate over available pairs
+				for seq_num, uid in zip(ids_seq, uids if uids else ids_seq):
+					# fetch by UID when available to be robust
+					if uids:
+						typ, msg_data = imap.uid('fetch', uid, "(RFC822)")
+					else:
+						typ, msg_data = imap.fetch(seq_num, "(RFC822)")
+					if typ != "OK":
+						continue
+					# msg_data is a list of tuples; find the part containing the raw message
+					raw = None
+					for part in msg_data:
+						if isinstance(part, tuple):
+							raw = part[1]
+							break
+					if not raw:
+						continue
+
+					parsed = email.message_from_bytes(raw)
+					frm = parsed.get("From", "")
+					subj = parsed.get("Subject", "")
+					date = parsed.get("Date", "")
+
+					# extract the full plain-text body when possible
+					body = ""
+					if parsed.is_multipart():
+						for part in parsed.walk():
+							ctype = part.get_content_type()
+							cdisp = str(part.get("Content-Disposition") or "")
+							if ctype == "text/plain" and "attachment" not in cdisp:
+								try:
+									body = part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8", errors="replace")
+								except Exception:
+									body = ""
+								break
+					else:
+						try:
+							body = parsed.get_payload(decode=True).decode(parsed.get_content_charset() or "utf-8", errors="replace")
+						except Exception:
+							body = ""
+
+					body = (body or "").strip()
+
+					# clean the body by removing quoted blocks and quoted lines
+					clean_body = self._clean_body(body)
+
+					results.append({
+						"id": seq_num.decode() if isinstance(seq_num, bytes) else str(seq_num),
+						"uid": int(uid) if isinstance(uid, (bytes, bytearray)) or (isinstance(uid, str) and uid.isdigit()) else (int(uid) if isinstance(uid, str) and uid.isdigit() else None),
+						"from": frm,
+						"subject": subj,
+						"date": date,
+						"body": body,
+						"clean_body": clean_body,
+					})
+
+					if mark_seen:
+						# mark as seen. Prefer UID STORE when we have a UID, otherwise use sequence STORE.
+						try:
+							if uids:
+								imap.uid('store', uid, '+FLAGS', '\\Seen')
+							else:
+								imap.store(seq_num, '+FLAGS', '\\Seen')
+						except Exception:
+							# best-effort, ignore marking failures
+							pass
+
+				imap.logout()
+		except Exception as exc:  # pragma: no cover - environment-specific
+			raise RuntimeError(f"Failed to check unread messages: {exc}")
+
+		return results
 
 
-# Convenience function for simple use cases
-def send_email_and_get_response(
-    to_email: str,
-    subject: str,
-    body: str,
-    timeout_seconds: Optional[int] = None,
-    poll_interval: int = 5
-) -> Optional[Dict[str, str]]:
-    """
-    Convenience function to send an email and wait for a response.
-    
-    Args:
-        to_email: Recipient's email address
-        subject: Email subject line
-        body: Email body text
-        timeout_seconds: Maximum time to wait for response in seconds (None = wait indefinitely)
-        poll_interval: Seconds between checking for new emails (default: 5)
-    
-    Returns:
-        Dictionary with keys 'from', 'subject', 'body', 'uid' if response received, None if timeout
-    
-    Example:
-        >>> response = send_email_and_get_response(
-        ...     "user@example.com",
-        ...     "Question for you",
-        ...     "What is your answer?",
-        ...     timeout_seconds=300  # Wait up to 5 minutes
-        ... )
-        >>> if response:
-        ...     print(f"Response: {response['body']}")
-    """
-    handler = EmailHandler(poll_interval=poll_interval)
-    return handler.send_and_wait_for_response(to_email, subject, body, timeout_seconds)
 
 
-if __name__ == "__main__":
-    # Example usage
-    print("Email Handler - Example Usage")
-    print("=" * 60)
-    
-    # Example 1: Simple send
-    try:
-        handler = EmailHandler()
-        recipient = os.getenv("DEFAULT_PLAYER_EMAIL", "test@example.com")
-        
-        print(f"\nExample 1: Sending email to {recipient}")
-        handler.send_email(
-            recipient,
-            "Test Email",
-            "This is a test email from email_handler.py"
-        )
-        print("✓ Email sent successfully")
-    except Exception as e:
-        print(f"✗ Failed to send email: {e}")
-    
-    # Example 2: Send and wait for response
-    print("\nExample 2: Send and wait for response")
-    print("This will wait indefinitely for a response...")
-    print("(Press Ctrl+C to cancel)")
-    
-    try:
-        response = send_email_and_get_response(
-            recipient,
-            "Please Reply",
-            "Please reply to this email to test the response functionality.",
-            timeout_seconds=300  # Wait up to 5 minutes
-        )
-        
-        if response:
-            print(f"✓ Response received from {response['from']}")
-            print(f"  Subject: {response['subject']}")
-            print(f"  Body: {response['body'][:100]}...")
-        else:
-            print("✗ No response received within timeout period")
-    
-    except KeyboardInterrupt:
-        print("\n✗ Cancelled by user")
-    except Exception as e:
-        print(f"✗ Error: {e}")
+
+__all__ = ["EmailHandler"]
+

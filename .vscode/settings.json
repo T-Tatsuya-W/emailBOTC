@@ -1,7 +1,15 @@
 {
-    "python.testing.pytestArgs": [
-        "tests"
-    ],
-    "python.testing.unittestEnabled": false,
-    "python.testing.pytestEnabled": true
+  // Use Python's built-in unittest discovery
+  "python.testing.unittestEnabled": true,
+  "python.testing.pytestEnabled": false,
+  // Discover tests under the `tests` folder using files named test_*.py
+  "python.testing.unittestArgs": [
+    "-v",
+    "-s",
+    "./tests",
+    "-p",
+    "test_*.py"
+],
+  // Automatically discover tests when files are saved
+  "python.testing.autoTestDiscoverOnSaveEnabled": true
 }
