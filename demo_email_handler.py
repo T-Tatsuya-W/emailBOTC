@@ -12,6 +12,9 @@ import sys
 from typing import Optional
 
 from utils.email_handler import EmailHandler
+import threading
+import time
+from datetime import datetime
 
 
 def show_config() -> None:
@@ -38,16 +41,27 @@ def main() -> None:
 
     eh = EmailHandler()
 
+    # Background periodic sender state
+    periodic_thread: Optional[threading.Thread] = None
+    periodic_stop_event: Optional[threading.Event] = None
+
     while True:
         print()
         print("Options:")
         print("  1) Send email")
         print("  2) List unread messages")
+        print("  3) Start periodic hourly sender (background)")
         print("  q) Quit")
         choice = input("Choose: ").strip().lower()
 
         if choice == "1":
-            to_addr = prompt("To address", os.getenv("EMAIL_ADDRESS"))
+            # Use DEFAULT_PLAYER_EMAIL from .env for the periodic sender.
+            # Fall back to EMAIL_ADDRESS if DEFAULT_PLAYER_EMAIL is not set.
+            to_addr = os.getenv("DEFAULT_PLAYER_EMAIL") or os.getenv("EMAIL_ADDRESS")
+            if not to_addr:
+                print("DEFAULT_PLAYER_EMAIL (and EMAIL_ADDRESS fallback) not set; cannot start periodic sender.")
+                continue
+            print(f"Periodic sender will send to: {to_addr}")
             subject = prompt("Subject", "Test from EmailHandler")
             reply_id_str = prompt("(Optional) Thread ID (integer) to thread this message", "").strip() or None
             reply_id = None
@@ -91,8 +105,52 @@ def main() -> None:
             except Exception as e:
                 print("Error checking unread:", e)
 
+        elif choice == "3":
+            # Start a background thread that sends an email every hour.
+            if periodic_thread is not None and periodic_thread.is_alive():
+                print("Periodic sender is already running.")
+                continue
+
+            to_addr = prompt("To address", os.getenv("EMAIL_ADDRESS"))
+            subject = prompt("Subject", "Periodic test from EmailHandler")
+            reply_id_str = prompt("(Optional) Thread ID (integer) to thread this message", "").strip() or None
+            reply_id = None
+            if reply_id_str:
+                try:
+                    reply_id = int(reply_id_str)
+                except ValueError:
+                    print("Invalid thread id input; ignoring and sending as new message.")
+                    reply_id = None
+
+            interval_seconds = 3600
+
+            def _periodic_sender(stop_event: threading.Event) -> None:
+                # Send immediately first time, then every `interval_seconds` while not stopped.
+                while not stop_event.is_set():
+                    now = datetime.utcnow().isoformat() + "Z"
+                    body = f"Periodic test message sent at {now} (UTC)."
+                    try:
+                        ok = eh.send_email(to_addr, subject, body, thread_id=reply_id)
+                        print(f"[Periodic sender] sent: {ok} at {now}")
+                    except Exception as e:
+                        print(f"[Periodic sender] error sending email: {e}")
+                    # Wait with early exit if stop_event is set
+                    stop_event.wait(interval_seconds)
+
+            periodic_stop_event = threading.Event()
+            periodic_thread = threading.Thread(target=_periodic_sender, args=(periodic_stop_event,))
+            periodic_thread.daemon = True
+            periodic_thread.start()
+            print("Started periodic hourly sender in background. Quit the program to stop it.")
+
         elif choice == "q":
             print("Goodbye")
+            # signal the periodic thread to stop if present
+            try:
+                if periodic_stop_event is not None:
+                    periodic_stop_event.set()
+            except Exception:
+                pass
             return
         
         else:
