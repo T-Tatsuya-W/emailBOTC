@@ -157,9 +157,94 @@ def main() -> None:
             print("Unknown choice")
 
 
+def run_choice_once(choice: str) -> None:
+    """Run a single choice non-interactively and exit.
+
+    This is used when the script is invoked with a numeric command-line
+    argument (e.g. `python demo_email_handler.py 3`). The function uses
+    sensible defaults taken from environment variables when user input is
+    normally requested in the interactive flow.
+    """
+    eh = EmailHandler()
+
+    if choice == "1":
+        to_addr = os.getenv("DEFAULT_PLAYER_EMAIL") or os.getenv("EMAIL_ADDRESS")
+        if not to_addr:
+            print("DEFAULT_PLAYER_EMAIL (and EMAIL_ADDRESS fallback) not set; cannot send email.")
+            return
+        subject = os.getenv("DEMO_SUBJECT") or "Test from EmailHandler"
+        body = os.getenv("DEMO_BODY") or "Hello from EmailHandler! (non-interactive)"
+        try:
+            ok = eh.send_email(to_addr, subject, body)
+            print("send_email returned:", ok)
+        except Exception as e:
+            print("Error sending email:", e)
+
+    elif choice == "2":
+        try:
+            msgs = eh.check_unread()
+            if not msgs:
+                print("No unread messages.")
+            else:
+                print(f"{len(msgs)} unread message(s):")
+                for m in msgs:
+                    print("- id:", m.get("id"), " uid:", m.get("uid"))
+                    print("  from:", m.get("from"))
+                    print("  subject:", m.get("subject"))
+                    print("  date:", m.get("date"))
+                    print("  body:\n", m.get("clean_body") or m.get("body") or "")
+                    print("  ----")
+        except Exception as e:
+            print("Error checking unread:", e)
+
+    elif choice == "3":
+        # Non-interactive: send a hard-coded number of periodic messages and exit.
+        # Defaults are intentionally simple for demo. They can be overridden by
+        # environment variables DEMO_PERIODIC_COUNT and DEMO_PERIODIC_INTERVAL.
+        to_addr = os.getenv("DEFAULT_PLAYER_EMAIL") or os.getenv("EMAIL_ADDRESS")
+        if not to_addr:
+            print("DEFAULT_PLAYER_EMAIL (and EMAIL_ADDRESS fallback) not set; cannot send periodic message.")
+            return
+        subject = os.getenv("DEMO_PERIODIC_SUBJECT") or "Periodic test from EmailHandler"
+
+        # Hard-coded defaults (can be overridden via env):
+        send_count = int(os.getenv("DEMO_PERIODIC_COUNT") or 6)
+        interval_seconds = int(os.getenv("DEMO_PERIODIC_INTERVAL") or 10)
+
+        for i in range(send_count):
+            now = datetime.utcnow().isoformat() + "Z"
+            body = f"Periodic test message {i+1}/{send_count} sent at {now} (UTC)."
+            try:
+                ok = eh.send_email(to_addr, subject, body)
+                print(f"[Periodic sender] sent: {ok} ({i+1}/{send_count}) at {now}")
+            except Exception as e:
+                print(f"[Periodic sender] error sending email ({i+1}/{send_count}): {e}")
+
+            # Sleep between sends, but don't sleep after the last one
+            if i < send_count - 1:
+                try:
+                    time.sleep(interval_seconds)
+                except KeyboardInterrupt:
+                    print("\nInterrupted during periodic sends")
+                    return
+
+    else:
+        print(f"Unknown non-interactive choice: {choice}")
+
+
 if __name__ == "__main__":
     try:
-        main()
+        # If a numeric argument is provided, run that choice once and exit.
+        if len(sys.argv) > 1:
+            arg = sys.argv[1].strip()
+            # accept strings like '1' or '2' or '3'
+            if arg.isdigit():
+                run_choice_once(arg)
+            else:
+                print(f"Unrecognized argument: {arg}; starting interactive mode.")
+                main()
+        else:
+            main()
     except KeyboardInterrupt:
         print("\nInterrupted by user")
         sys.exit(1)
