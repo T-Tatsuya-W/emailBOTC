@@ -1,6 +1,6 @@
 """Email handler utility.
 
-This module provides EmailHandler which can send emails over SMTP and
+This module provides `EmailHandler` which can send emails over SMTP and
 check for unread messages via IMAP. Configuration is read from a `.env`
 file via python-dotenv. Assumed environment variable names:
 
@@ -11,8 +11,44 @@ file via python-dotenv. Assumed environment variable names:
 - IMAP_SERVER - IMAP server hostname (e.g. imap.gmail.com)
 - IMAP_PORT - IMAP server port (defaults to 993)
 
-You may also pass these values to the EmailHandler constructor to override
+You may also pass these values to the `EmailHandler` constructor to override
 the env values.
+
+
+Two main public methods
+------------------------
+
+send_email(to_address, subject, body, thread_id=None, reply_uid=None) -> bool
+		Send a plain-text email. Parameters:
+			- to_address: str or None. Destination email address. When `reply_uid`
+				is provided the original message is queried and `to_address` may be
+				inferred from the original message's Reply-To/From if `to_address` is None.
+			- subject: str. Subject line for the message.
+			- body: str. Plain-text message body.
+			- thread_id: Optional[int]. If provided a synthetic In-Reply-To/References
+				header will be created to associate the message with an internal thread id.
+			- reply_uid: Optional[int]. IMAP UID of an existing message to reply to;
+				when provided the original message headers will be used for threading.
+
+		Returns: True on success. Raises ValueError for invalid inputs (e.g.
+		missing to_address when reply_uid is not supplied) or RuntimeError for
+		transport/fetch errors.
+
+check_unread(mark_seen: bool = False) -> List[Dict[str, Any]]
+		Check the INBOX for unread messages. Parameters:
+			- mark_seen: bool. If True, messages returned with numeric UIDs will be
+				marked as seen on the server.
+
+		Returns: a list of dictionaries, each containing these keys (example types):
+			- 'id' (str): IMAP sequence number (as a string)
+			- 'uid' (int|None): IMAP UID (preferred stable identifier)
+			- 'from' (str): the From header value
+			- 'subject' (str): the Subject header
+			- 'date' (str): the Date header
+			- 'body' (str): the raw plain-text body extracted from the message
+			- 'clean_body' (str): the body cleaned of quoted reply blocks
+
+		Raises RuntimeError for IMAP errors.
 """
 
 from __future__ import annotations
@@ -114,6 +150,15 @@ class EmailHandler:
 			cleaned.append(ln)
 
 		return "\n".join(cleaned).strip()
+	
+	def extract_ints_from_body(self, body: str) -> List[int]:
+		"""Extract integers from the email body.
+
+		Args:
+			body: The plain-text body of the email."""
+		ints = re.findall(r'\b\d+\b', body)
+		return [int(i) for i in ints]
+	
 
 	def send_email(
 		self,
@@ -247,7 +292,7 @@ class EmailHandler:
 			mark_seen: if True, mark messages as seen on the server.
 
 		Returns:
-			A list of dictionaries with keys: 'id', 'uid', 'from', 'subject', 'date', 'snippet'.
+			A list of dictionaries with keys: 'id', 'uid', 'from', 'subject', 'date', body', 'clean_body'.
 			- 'id' is the IMAP sequence number (string).
 			- 'uid' is the IMAP UID (int) which is the stable identifier you should
 			  prefer if you need to refer to the same message later across sessions.

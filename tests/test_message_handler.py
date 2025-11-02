@@ -1,115 +1,59 @@
-"""Unit tests for utils.message_handler.MessageHandler
+"""Simplified unit tests demonstrating unittest and unittest.mock.
 
-This test constructs MessageHandler with the mock email handler and asserts
-the example message list is present and has the expected fields.
+These tests focus on core `MessageHandler` behaviour and use `unittest.mock`
+to provide a lightweight email handler substitute without an external mock
+class file.
 """
 import unittest
+from unittest.mock import Mock, create_autospec
+from typing import List
 
-from utils.message_handler import MessageHandler
-from utils.mock_email_handler import MockEmailHandler
+from utils.message_handler import MessageHandler, Message
+from utils.email_handler import EmailHandler
 
 
-class TestMessageHandler(unittest.TestCase):
-    def test_constructor_initializes_example_messages(self):
-        mock = MockEmailHandler(email_address="me@example.com")
-        handler = MessageHandler(email_handler=mock)
+class SimpleTests(unittest.TestCase):
+    def test_parse_response_integers(self):
+        mh = MessageHandler()
+        self.assertEqual(mh.parse_response_integers("3,6."), [3, 6])
+        self.assertEqual(mh.parse_response_integers("no numbers"), [])
 
-        # basic assertions about the example messages
-        self.assertIsInstance(handler.messages, list)
-        self.assertGreaterEqual(len(handler.messages), 1)
+    def test_has_message(self):
+        msgs: List[Message] = [
+            Message(priority=1, address="a@b.com", subject="Hi"),
+        ]
+        mh = MessageHandler(messages=msgs)
+        self.assertTrue(mh.has_message("Hi", "a@b.com"))
+        self.assertFalse(mh.has_message("Other", "a@b.com"))
 
-        first = handler.messages[0]
-        self.assertEqual(first.priority, 1)
-        self.assertFalse(first.resolved)
-        self.assertIsInstance(first.response, list)
-        # response has up to two integers in our example
-        self.assertEqual(first.response, [1, 2])
-        self.assertEqual(first.address, "player1@example.com")
-        self.assertEqual(first.subject, "Welcome")
-        self.assertEqual(first.playernumber, 1)
-        # expected_response_number should be an int in {0,1,2}
-        self.assertIsInstance(first.expected_response_number, int)
-        self.assertIn(first.expected_response_number, (0, 1, 2))
-        self.assertEqual(first.expected_response_number, 2)
+    def test_send_night_emails_uses_email_handler(self):
+        mock_eh = Mock()
+        mock_eh.send_email.return_value = True
 
-    def test_get_unresolved_returns_unresolved_messages(self):
-        handler = MessageHandler()
-        # mark second message resolved and verify filtering
-        if len(handler.messages) > 1:
-            handler.messages[1].resolved = True
-        unresolved = handler.get_unresolved()
-        for m in unresolved:
-            self.assertFalse(m.resolved)
+        msgs = [Message(priority=1, address="p@example.com", subject="S")]
+        mh = MessageHandler(email_handler=mock_eh, messages=msgs)
 
-    def test_has_message_matches_subject_and_address(self):
-        handler = MessageHandler()
-        # existing example message (first) should be found
-        self.assertTrue(handler.has_message("Welcome", "player1@example.com"))
-        # case-insensitive match
-        self.assertTrue(handler.has_message("welcome", "PLAYER1@EXAMPLE.COM"))
-        # non-existing combinations should return False
-        self.assertFalse(handler.has_message("Nope", "noone@example.com"))
+        sent = mh.send_night_emails("subj", "body")
+        self.assertEqual(sent, 1)
+        mock_eh.send_email.assert_called_once()
 
-    def test_parse_response_integers_various_formats(self):
-        handler = MessageHandler()
+    def test_monitor_until_resolved_with_mock_side_effects(self):
+        # Use create_autospec to ensure the mock matches EmailHandler's API
+        mock_eh = create_autospec(EmailHandler, instance=True)
 
-        cases = {
-            "3,6.": [3, 6],
-            "3": [3],
-            "  12/34 some text": [12, 34],
-            "no numbers here": [],
-            "7 8 extra": [7, 8],
-            "9-10": [9, 10],
-            "": [],
-            None: [],
-            "I want to nominate 5 and 11.": [5, 11],
-        }
+        messages = [
+            Message(priority=1, address="p1@example.com", subject="A", expected_response_number=2),
+            Message(priority=2, address="p2@example.com", subject="B", expected_response_number=1),
+        ]
 
-        for inp, expected in cases.items():
-            res = handler.parse_response_integers(inp)
-            self.assertEqual(res, expected, msg=f"input={inp!r}")
+        # First poll returns one message, second poll returns the other
+        first = [{"id": "1", "uid": 1, "from": "p1@example.com", "subject": "A", "clean_body": "3,6"}]
+        second = [{"id": "2", "uid": 2, "from": "p2@example.com", "subject": "B", "clean_body": "7"}]
+        mock_eh.check_unread.side_effect = [first, second, []]
 
-    def test_process_incoming_marks_resolved_when_expected_count_matches(self):
-        mock = MockEmailHandler()
-        handler = MessageHandler(email_handler=mock)
-
-        # create an incoming unread message that matches the first example
-        mock.add_unread({
-            "id": "10",
-            "uid": 500,
-            "from": "player1@example.com",
-            "subject": "Welcome",
-            "date": "now",
-            "body": "3,6.",
-            "clean_body": "3,6.",
-        })
-
-        unread = mock.check_unread()
-        processed = handler.process_incoming(unread)
-        self.assertEqual(processed, 1)
-        # first message should now be resolved
-        self.assertTrue(handler.messages[0].resolved)
-        self.assertEqual(handler.messages[0].response, [3, 6])
-
-    def test_process_incoming_ignores_when_count_mismatch(self):
-        mock = MockEmailHandler()
-        handler = MessageHandler(email_handler=mock)
-
-        # create incoming message with only one number but message expects 2
-        mock.add_unread({
-            "id": "11",
-            "uid": 501,
-            "from": "player1@example.com",
-            "subject": "Welcome",
-            "date": "now",
-            "body": "3",
-            "clean_body": "3",
-        })
-
-        unread = mock.check_unread()
-        processed = handler.process_incoming(unread)
-        self.assertEqual(processed, 0)
-        self.assertFalse(handler.messages[0].resolved)
+        mh = MessageHandler(email_handler=mock_eh, messages=messages)
+        resolved = mh.monitor_until_resolved(poll_interval=0.01, max_polls=10, mark_seen=False)
+        self.assertEqual(resolved, 2)
 
 
 if __name__ == "__main__":

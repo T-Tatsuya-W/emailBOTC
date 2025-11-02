@@ -11,7 +11,7 @@ import os
 import sys
 from typing import Optional
 
-from utils.email_handler import EmailHandler
+from email_handler import EmailHandler
 import threading
 import time
 from datetime import datetime

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import List, Optional
+import time
+import re
 
 
 @dataclass
@@ -24,6 +26,7 @@ class Message:
     - body: str
     - playernumber: int
     - responseBody: str
+    - expected_response_number: int (0, 1 or 2)
     """
 
     priority: int
@@ -36,6 +39,8 @@ class Message:
     responseBody: str = ""
     # number of expected integer responses (0, 1 or 2)
     expected_response_number: int = 0
+    playerName: str = ""
+    canChooseSelf: bool = False
 
 
 class MessageHandler:
@@ -45,154 +50,155 @@ class MessageHandler:
     real `EmailHandler` for `MockEmailHandler` in tests.
     """
 
-    def __init__(self, email_handler: Optional[object] = None) -> None:
+    def __init__(
+        self,
+        email_handler: Optional[object] = None,
+        messages: Optional[List[Message]] = None,
+        max_player_id: int = 0,
+    ) -> None:
         # store the provided email handler (real or mock) for future use
         self.email_handler = email_handler
 
-        # Example messages list matching the specified schema. Tests may
-        # construct the handler and assert these example items exist.
-        self.messages: List[Message] = [
-            Message(
-                priority=1,
-                resolved=False,
-                response=[1, 2],
-                address="player1@example.com",
-                subject="Welcome",
-                body="Hello player 1, this is a test message.",
-                playernumber=1,
-                responseBody="",
-                expected_response_number=2,
-            ),
-            Message(
-                priority=2,
-                resolved=False,
-                response=[],
-                address="player2@example.com",
-                subject="Follow up",
-                body="Second example message body.",
-                playernumber=2,
-                responseBody="",
-                expected_response_number=0,
-            ),
-        ]
+        # Allow the caller to provide the initial list of Message objects.
+        # If none are provided, start with an empty list.
+        self.messages: List[Message] = list(messages) if messages else []
+        self.max_player_id = max_player_id
 
-    def get_unresolved(self) -> List[Message]:
-        """Return the list of messages that are not resolved yet."""
-        return [m for m in self.messages if not m.resolved]
-
-    def has_message(self, subject: str, address: str) -> bool:
-        """Return True if a message with matching subject and address exists.
-
-        Matching is performed by trimming whitespace and comparing case-insensitively.
+    def send_and_resolve_all(
+        self,
+        messages: List[Message],
+        poll_every: Optional[int] = 5,
+        poll_for: Optional[int] = 60,
+    ) -> int:
+        """Sends all messages and monitors for responses until resolved.
 
         Args:
-            subject: subject to match against messages' subject
-            address: email address to match against messages' address
+            message_handler: The MessageHandler instance to use.
+            messages: List of Message objects to send.
+            poll_every: Seconds between polling for responses.
+            poll_for: Total seconds to poll before giving up."""
+        
+        print("\nSending emails to all players...", end="")
+        # Send all messages
+        for message in messages:
+            # Add unique code to end of subject to help match replies
+            message.subject += f" [ID: {id(message)}]"
 
-        Returns:
-            True if a corresponding message exists, False otherwise.
-        """
-        if subject is None or address is None:
-            return False
+            self.email_handler.send_email(
+                to_address=message.address,
+                subject=message.subject,
+                body=message.body,
+            )
 
-        subj = subject.strip().casefold()
-        addr = address.strip().casefold()
+        
+        # print all messages that are passed into the function
+        # all messages have components: priority, address, subject, body, resolved, response, playernumber, responseBody, expected_response_number
 
-        for m in self.messages:
-            m_subj = (m.subject or "").strip().casefold()
-            m_addr = (m.address or "").strip().casefold()
-            if m_subj == subj and m_addr == addr:
-                return True
-        return False
-
-    def _find_message(self, subject: str, address: str) -> Optional[Message]:
-        """Return the first message matching subject and address, or None.
-
-        Matching uses the same normalization as `has_message` but is a bit more
-        tolerant for typical email 'From' headers (e.g. "Name <addr>"). If the
-        handler contains multiple matches, the first is returned.
-        """
-        if subject is None or address is None:
-            return None
-
-        subj = subject.strip().casefold()
-        addr = address.strip().casefold()
-
-        for m in self.messages:
-            m_subj = (m.subject or "").strip().casefold()
-            m_addr = (m.address or "").strip().casefold()
-            # tolerate cases where the incoming 'from' contains a display name
-            if m_subj == subj and (m_addr == addr or m_addr in addr or addr in m_addr):
-                return m
-        return None
-
-    def process_incoming(self, incoming_msgs: List[dict]) -> int:
-        """Process incoming messages, matching them to known messages.
-
-        For each incoming message (dict expected to contain at least 'subject',
-        'from' and 'body' or 'clean_body'), find the corresponding Message in
-        `self.messages`. If found, extract integers from the incoming body and
-        if the number of integers equals the message's
-        `expected_response_number`, mark the Message as resolved and store the
-        parsed integers and response body.
-
-        Returns the number of messages that were marked resolved during this
-        invocation.
-        """
-        resolved_count = 0
-        for inc in incoming_msgs:
-            subj = inc.get("subject") or inc.get("Subject") or ""
-            frm = inc.get("from") or inc.get("From") or ""
-            body = inc.get("clean_body") or inc.get("body") or inc.get("Body") or ""
-
-            m = self._find_message(subj, frm)
-            if m is None:
-                continue
-
-            # skip already resolved messages
-            if m.resolved:
-                continue
-
-            parsed = self.parse_response_integers(body)
-            if len(parsed) == getattr(m, "expected_response_number", 0):
-                m.resolved = True
-                m.response = parsed
-                m.responseBody = body
-                resolved_count += 1
-
-        return resolved_count
-
-    def parse_response_integers(self, text: Optional[str]) -> List[int]:
-        """Extract up to two integers from the start of `text`.
-
-        The function attempts to find one or two integers appearing at the
-        beginning of `text`, possibly separated by non-digit characters such
-        as commas, slashes, spaces, hyphens, semicolons etc. Examples:
-
-        - "3,6." -> [3, 6]
-        - "3" -> [3]
-        - "12/34 some text" -> [12, 34]
-        - "no numbers" -> []
-
-        Returns a list of 0, 1 or 2 integers.
-        """
-        import re
-
-        if not text:
-            return []
-
-        # Find all integer substrings anywhere in the text and return the
-        # first up to two values. This handles inputs like "I want 5 and 11"
-        # as well as leading formats like "3,6.".
-        nums = re.findall(r"[0-9]+", text)
-        results: List[int] = []
-        for n in nums[:2]:
-            try:
-                results.append(int(n))
-            except Exception:
-                # ignore parse failures (shouldn't happen for \d+)
-                continue
-        return results
+        print("Done")
+        # for msg in messages: print(f"To {msg.address} subject '{msg.subject}' body '{msg.body}' resolved {msg.resolved} response {msg.response} playernumber {msg.playernumber} responsebody {msg.responseBody} expected responses {msg.expected_response_number}")
 
 
-__all__ = ["Message", "MessageHandler"]
+        # Monitor for responses until all messages are resolved or timeout
+        unresolved_messages = [
+            msg for msg in messages if not msg.resolved
+        ]
+        print(f"Waiting for {len(unresolved_messages)} message(s)", end="", flush=True)
+
+
+        start_time = time.time()
+        while time.time() - start_time < poll_for:
+            time.sleep(poll_every)
+            
+            if not unresolved_messages:
+                break  # All messages resolved
+            # print number of messages still unresolved
+            print(".", end="", flush=True)
+
+            # Check for new emails
+            new_emails = self.email_handler.check_unread()
+
+            if new_emails:
+                print(f"found {len(new_emails)} email(s)")
+
+            for email in new_emails:
+                # print(f"Processing email from {email.get('from')} with subject '{email.get('subject')}'")
+                # go through and check if any global commands are present.
+                # normalise the subject
+                
+                email_subj = normalize_subject(email.get("subject") or "")
+                email_from = (email.get("from") or "").strip().casefold()
+
+                for msg in unresolved_messages:
+                    # print(f"Checking against message to {msg.address} with subject '{msg.subject}'")
+
+                    # Normalize and compare sender addresses (tolerant of display names)
+                    msg_addr = (msg.address or "").strip().casefold()
+
+                    msg_subj = normalize_subject(msg.subject)
+
+                    if addresses_match(email_from, msg_addr) and email_subj == msg_subj:
+                        # Parse response integers from email body
+                        clean_body = email.get("clean_body")
+                        if msg.expected_response_number > 0:
+                            response_ints = self.email_handler.extract_ints_from_body(clean_body)
+
+                            msg.response = response_ints
+                            msg.responseBody = clean_body
+
+                            # Mark as resolved if expected number of responses received
+                            if (
+                                len(response_ints) == msg.expected_response_number
+                                and all(0 < n <= self.max_player_id for n in response_ints)
+                                and (len(response_ints) != 2 or response_ints[0] != response_ints[1])
+                                and (msg.canChooseSelf or all(n != msg.playernumber for n in response_ints))
+                            ):
+                                msg.resolved = True
+                                print(f"accepted response from {msg.playerName}")
+
+                            else:
+                                print(f"rejecting response from {msg.playerName} sending again")
+                                # send message again.
+                                self.email_handler.send_email(msg.address, msg.subject, msg.body+"\n Your previous response was invalid. Please try again.")
+                        else:
+                            # No expected responses, just mark as resolved
+                            msg.resolved = True
+                            msg.responseBody = clean_body
+                            print(f"accepted response from {msg.playerName}")
+                unresolved_messages = [
+                    msg for msg in messages if not msg.resolved
+                ]
+
+                print(f"Waiting for {len(unresolved_messages)} message(s)", end="", flush=True)
+
+                orig_from = (email.get("from") or "").strip()
+                body_text = (email.get("clean_body") or email.get("body") or "").casefold()
+                trigger = "who are we waiting for"
+
+                # Trigger if the phrase appears in the subject or anywhere in the body
+                if trigger in (email_subj or "") or trigger in (body_text or ""):
+                    pending_players = [msg.playerName for msg in unresolved_messages]
+                    if pending_players:
+                        response_body = "Waiting for responses from: " + ", ".join(pending_players)
+                    else:
+                        response_body = "No pending responses."
+                    self.email_handler.send_email(
+                        to_address=orig_from,
+                        subject="Re: We are waiting for...",
+                        body=response_body,
+                    )
+
+        # Return the number of resolved messages
+        return messages
+    
+
+def addresses_match(a: str, b: str) -> bool:
+    return a == b or a in b or b in a
+
+# Normalize subjects by removing common reply prefixes like "Re:" and compare case-insensitively
+def normalize_subject(s: str) -> str:
+    if s is None:
+        return ""
+    s2 = s.strip()
+    # remove leading Re: or Fw: (possibly repeated), case-insensitive
+    s2 = re.sub(r'^(?:\s*(?:re|fw|fwd)\s*:)+\s*', "", s2, flags=re.IGNORECASE)
+    return s2.casefold()
