@@ -1,144 +1,115 @@
-# emailBOTC
+# emailBOTC — email-driven game toolkit
 
-A small utility for sending and reading emails using SMTP and IMAP, focused on programmatic workflows and reliable in-thread replies.
+This repository contains an early-stage email-driven game prototype where game prompts are sent to players via email and player actions are read back from email replies. The codebase provides:
 
-This repository contains a lightweight `EmailHandler` in `utils/email_handler.py` that:
+- an `EmailHandler` that sends and reads plain-text emails (SMTP + IMAP),
+- a small `Message` model and `MessageHandler` that sends game prompts and polls for replies, and
+- a minimal game driver (`main.py`) with a placeholder night-phase implementation demonstrating how messages are created and processed.
 
-- sends emails via SMTP (with optional in-thread replies), and
-- checks for unread messages via IMAP and returns full plain-text bodies with cleaned replies.
+This README documents the current game flow, the location of key classes/functions, how to configure and run the project, and a few notes/assumptions.
 
-The implementation intentionally prefers IMAP UIDs for stable message references and provides helpers for extracting and cleaning message bodies (removes common reply headers and quoted blocks).
+## Current game flow (what the code does today)
 
-## Contents
+1. The driver in `main.py` constructs an in-memory `players` list and calls `nightphase(players)`.
+2. `nightphase` creates a `Message` object for each player describing their night prompt (how many integer responses are expected and other metadata).
+3. The `MessageHandler` (in `utils/message_handler.py`) is created with an `EmailHandler` instance and the messages and calls `send_and_resolve_all` to:
+	 - send each player's prompt email (via `EmailHandler.send_email`),
+	 - poll the mail account using `EmailHandler.check_unread` for replies,
+	 - match incoming replies to outstanding messages by normalized subject and sender address,
+	 - extract integers from the reply body and validate them against `expected_response_number` and `max_player_id`,
+	 - mark messages resolved when valid responses are received (otherwise re-send the prompt with an error message).
+4. After `send_and_resolve_all` returns, `nightphase` processes resolved player actions according to role priorities (a simplified priority loop is implemented for roles like "Imp", "Poisoner", "Monk", etc.).
 
-- `utils/email_handler.py` — main EmailHandler class (send & check_unread).
-- `main.py` — small interactive harness for manual testing (send / list unread).
-- `requirements.txt` — Python dependencies used by the project.
+Notes about this flow:
+- Matching replies depends on normalized subject text and sender addresses. Subjects are augmented with a unique id on send to reduce collisions.
+- Responses are parsed as integers (player id numbers). The handler enforces simple validation rules (range, no duplicate pair responses, and self-choice rules).
+- The implementation is intentionally simple and synchronous (polling). A production implementation could use IMAP IDLE, background workers, or a message queue.
 
-## Design contract (short)
+## File / class / function organization
 
-- Inputs: environment config via `.env` (or explicit constructor args), and method inputs such as `to_address`, `subject`, `body`, and `reply_uid`.
-- Outputs: boolean success for sends, and a list of message dictionaries for `check_unread` with both sequence `id` and stable numeric `uid`, plus `body` and `clean_body`.
-- Error modes: ValueError for missing config; RuntimeError for network/IMAP/SMTP failures; methods attempt best-effort cleanup and reporting.
+- `main.py`
+	- parse_cli(argv=None) -> Optional[int]: parse optional integer CLI arg.
+	- main() -> None: builds demo `players` list and invokes the `nightphase`.
+	- nightphase(players: list) -> list: constructs `Message` objects for each player, uses `MessageHandler` to send and resolve prompts, then runs simple role-priority action handling.
+	- get_player_by_number(players, number) -> Optional[dict]: helper to find a player dict by id.
 
-## Required configuration
+- `utils/email_handler.py`
+	- class EmailHandler
+		- __init__(...): reads config from env or constructor args.
+		- _ensure_config(): validate required config is present.
+		- _clean_body(body: str) -> str: best-effort removal of quoted/previous message content.
+		- extract_ints_from_body(body: str) -> List[int]: find integer tokens in the message body.
+		- send_email(to_address, subject, body, thread_id=None, reply_uid=None) -> bool: send plain-text email; if `reply_uid` is provided the original message is fetched and threading headers set.
+		- check_unread(mark_seen: bool = False) -> List[Dict[str, Any]]: fetch unread messages from INBOX, extract plain-text body and `clean_body`, return sequence id and UID.
 
-The handler reads configuration from environment variables (via `python-dotenv`) or you can pass them directly to the `EmailHandler` constructor. Add a `.env` file at the repo root with these keys:
+	EmailHandler expects these environment variables (or constructor overrides): `EMAIL_ADDRESS`, `EMAIL_APP_PASSWORD`, `SMTP_SERVER`, `SMTP_PORT` (default 587), `IMAP_SERVER`, `IMAP_PORT` (default 993).
 
-```
-EMAIL_ADDRESS=you@example.com
-EMAIL_APP_PASSWORD=<app-password-or-smtp-password>
-SMTP_SERVER=smtp.example.com
-SMTP_PORT=587
-IMAP_SERVER=imap.example.com
-IMAP_PORT=993
-```
+- `utils/message_handler.py`
+	- @dataclass Message: fields include priority, resolved, response (List[int]), address, subject, body, playernumber, responseBody, expected_response_number, playerName, canChooseSelf.
+	- class MessageHandler
+		- __init__(email_handler=None, messages=None, max_player_id=0)
+		- send_and_resolve_all(messages, poll_every=5, poll_for=60) -> List[Message]: sends prompts and polls using the provided `email_handler` until messages are resolved or timeout.
+		- addresses_match(a, b) and normalize_subject(s) — small helpers used by the handler.
 
-Make sure `requirements.txt` contains `python-dotenv` (it does in this repo). Then install dependencies:
+- `utils/demo_email_handler.py`
+	- A small interactive demo harness that can send a test message, list unread messages, or start a periodic sender. Useful for manual testing outside the game flow.
+
+- `tests/test_message_handler.py`
+	- A set of unit tests that currently exercise MessageHandler behaviors. Note: some tests reference helper names that used to exist; the code and test expectations may be slightly out-of-sync. See "Notes & known issues" below.
+
+## Configuration and running
+
+1. Install dependencies:
 
 ```powershell
 python -m pip install -r requirements.txt
 ```
 
-## Usage examples
+2. Create a `.env` file at the project root (or set env vars) with at minimum:
 
-Example: basic send
-
-```python
-from utils.email_handler import EmailHandler
-
-eh = EmailHandler()  # reads from .env by default
-success = eh.send_email(
-	to_address='friend@example.com',
-	subject='Hello from emailBOTC',
-	body='This is a test message sent from emailBOTC.'
-)
-print('sent?', success)
+```
+EMAIL_ADDRESS=you@example.com
+EMAIL_APP_PASSWORD=<app-password>
+SMTP_SERVER=smtp.example.com
+IMAP_SERVER=imap.example.com
 ```
 
-Replying to a message by UID (stable identifier)
+3. Run the minimal game demo (sends prompts and polls using values in `main.py`):
 
-If you have an IMAP UID for a message (for example from `check_unread`), pass it to `send_email` as `reply_uid` and the handler will fetch the original message, extract the original Message-ID and reply headers, and set proper `In-Reply-To` / `References` headers automatically.
-
-```python
-from utils.email_handler import EmailHandler
-
-eh = EmailHandler()
-reply_uid = 12345  # an IMAP UID you previously saved
-ok = eh.send_email(
-	to_address=None,               # will default to original Reply-To or From if None
-	subject='Re: original subject',
-	body='Thanks — here is my reply',
-	reply_uid=reply_uid
-)
+```powershell
+python main.py
 ```
 
-Notes:
-- `to_address=None` when `reply_uid` is set means the handler will determine the correct recipient (Reply-To or From) from the original message.
-- `thread_id` is a fallback synthetic header (if you don't have a real Message-ID) that helps group messages but is not recommended over `reply_uid`.
+4. Use the demo harness interactively:
 
-Checking unread messages
-
-```python
-from utils.email_handler import EmailHandler
-
-eh = EmailHandler()
-msgs = eh.check_unread(mark_seen=False)
-for m in msgs:
-	print('seq_id:', m['id'], 'uid:', m['uid'])
-	print('from:', m['from'])
-	print('subject:', m['subject'])
-	print('clean_body:')
-	print(m['clean_body'])
-	print('---')
+```powershell
+python utils/demo_email_handler.py
 ```
 
-Each message dict includes these keys (example):
+5. Running tests:
 
-```json
-{
-  "id": "12",
-  "uid": 34567,
-  "from": "Alice <alice@example.com>",
-  "subject": "Meeting notes",
-  "date": "Fri, 31 Oct 2025 10:15:00 +0000",
-  "body": "Full extracted plain-text body including quoted text and original message",
-  "clean_body": "Only the new content, with reply headers and quoted blocks removed"
-}
+```powershell
+python -m pytest -q
 ```
 
-`id` is the IMAP sequence number (string). `uid` is the IMAP UID (integer) and is stable across the mailbox; prefer `uid` for referencing messages in code.
+Note: the repository uses simple unit tests that mock the `EmailHandler`. Because the test file and the current `MessageHandler` implementation have diverged slightly (some helper names and APIs changed during development), tests may need small updates to match the current `MessageHandler` API.
 
-## What `clean_body` tries to do
+## Notes & known issues / assumptions
 
-- Truncate at common reply separators like lines matching `^On .*wrote:$` and `-----Original Message-----`.
-- Remove lines that start with `>` (quoted lines).
-- Provide a compact block that contains the new reply text and not the original message.
+- The game code in `main.py` is a prototype and uses a static `players` list and simple role-handling logic. It is not a finished game engine; it's an integration demo showing how email prompts and replies could be wired into a turn-based/night-phase flow.
+- Reply matching relies on normalized subject and sender address; if email clients rewrite subjects aggressively this may fail.
+- `EmailHandler._clean_body` is best-effort and may not strip all quoted content for complex HTML messages.
+- Tests in `tests/test_message_handler.py` may reference older API names (for example `parse_response_integers`, `monitor_until_resolved`, or `send_night_emails`) — these need to be reconciled with `MessageHandler.send_and_resolve_all` and the current helpers.
 
-This is best-effort. For complex multi-part HTML or unusual clients, some quoted content may remain; see troubleshooting below.
+## Suggested next steps (small, low-risk)
 
-## Example flows / use cases
+- Update/align unit tests to the current `MessageHandler` API (rename or adapt tests to call `send_and_resolve_all`, or add the small adapter helpers the tests expect).
+- Add a small example script that runs `main.py` end-to-end with a mocked `EmailHandler` so CI can exercise the game flow without real SMTP/IMAP.
+- Add HTML->text fallback for `EmailHandler.check_unread` using `beautifulsoup4` if HTML-only messages need support.
 
-- Automated replies to support tickets: poll `check_unread`, parse `clean_body` to understand the request, and `send_email(reply_uid=uid, body=...)` to reply in-thread.
-- Notifications and threaded follow-ups: send an initial message, store the returned `uid` from `check_unread` when people reply, and use `reply_uid` to address future replies properly.
-- Human-in-the-loop workflows: `main.py` provides an interactive way to send and list unread messages during development.
+If you'd like, I can now:
 
-## Troubleshooting
+- update the unit tests to match the current `MessageHandler` API, and run the test suite, or
+- add a mocked demo runner that simulates replies so you can run the night-phase locally without email credentials.
 
-- Missing config: if `.env` is absent or variables missing, the constructor will raise `ValueError`. Confirm `.env` or pass params explicitly.
-- IMAP/SMTP auth errors: ensure `EMAIL_APP_PASSWORD` is correct and that the account allows SMTP/IMAP access (app password, less-secure apps, or OAuth as appropriate).
-- HTML-only messages: currently the handler extracts plain-text parts and falls back to decoding simple payloads; HTML-only messages may not be converted perfectly. Consider adding an HTML->text fallback (future work).
-- IMAP IDLE / long-lived sockets: earlier work included IDLE polling, but it produced socket timeout issues in some environments — IDLE was removed in favor of simple checks. If you need IDLE, consider using a robust library or dedicated long-running worker and thorough error handling.
-
-## Next steps (suggested improvements)
-
-- Add a `reply_to_uid(uid, body, subject=None, reply_all=False)` convenience method.
-- Add HTML-to-text fallback for HTML-only messages (e.g., using `beautifulsoup4` or `html2text`).
-- Add unit tests (mock SMTP/IMAP) and a CI workflow.
-
-## Where to look in the code
-
-- `utils/email_handler.py` — the EmailHandler and helpers (send_email, check_unread, _clean_body).
-- `main.py` — simple manual CLI to exercise the handler.
-
-If you'd like, I can also add a short example script that polls for unread messages and automatically replies using `reply_uid` — say the word and I'll implement it next.
+Tell me which of these you'd prefer and I'll implement it next.
