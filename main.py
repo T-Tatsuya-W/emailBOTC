@@ -132,14 +132,28 @@ def main() -> None:
 
 
 
-def nightphase(players: list) -> None:
-    """Placeholder night phase function.
+def nightphase(
+    players: list,
+    message_handler: Optional[MessageHandler] = None,
+    email_handler: Optional[EmailHandler] = None,
+) -> list:
+    """Run a simplified night phase.
 
-    This function is a stub representing where the night phase logic would go.
-    It currently just prints the players' information.
+    This function now accepts optional `message_handler` and `email_handler`
+    parameters so test code can inject mocks. If a handler is not provided the
+    function will construct the default implementations.
+
+    Args:
+        players: list of player dicts.
+        message_handler: optional MessageHandler instance to use.
+        email_handler: optional EmailHandler instance to use (used to create a
+                       MessageHandler if message_handler is not provided).
+
+    Returns:
+        The (possibly mutated) players list.
     """
+
     print("Starting night phase with players:")
-    # Here you would implement the actual night phase logic.
 
     player_states = ""
     for player in players:
@@ -147,17 +161,18 @@ def nightphase(players: list) -> None:
 
     print(player_states)
 
-    # First each player is sent an email with current game state, and prompts for actions if applicable.
-    # create an instance of message_handler and create messages for each player
-    message_handler = MessageHandler()
-    messages = []
+    # Build messages for each player
+    messages: list[Message] = []
     for player in players:
         subject = "Night Phase Actions"
-        body = f"Hello {player['name']},\nIt's night time! current players:\n{player_states}\n Please respond with your actions. You need to respond with {player['nightResponse']} integer(s)."
+        body = (
+            f"Hello {player['name']},\nIt's night time! current players:\n{player_states}\n "
+            f"Please respond with your actions. You need to respond with {player['nightResponse']} integer(s)."
+        )
         message = Message(
             priority=player['nightActionPriority'],
             address=player['email'],
-            subject=subject+"player"+str(player['id']),
+            subject=subject + "player" + str(player['id']),
             body=body,
             resolved=False,
             response=[],
@@ -165,53 +180,48 @@ def nightphase(players: list) -> None:
             responseBody="",
             expected_response_number=player["nightResponse"],
             playerName=player["name"],
-            canChooseSelf=player["canChooseSelf"]
+            canChooseSelf=player["canChooseSelf"],
         )
         messages.append(message)
 
-    # set subjects and bodies as well as expected responses etc. for each message
+    # Prepare handlers: allow injection for testing, otherwise construct defaults
+    if email_handler is None:
+        email_handler = EmailHandler()
 
-    email_handler = EmailHandler()
-    message_handler = MessageHandler(email_handler, messages, max_player_id=len(players))
+    if message_handler is None:
+        message_handler = MessageHandler(email_handler, messages, max_player_id=len(players))
+    else:
+        # ensure the provided handler uses this run's messages and max_player_id
+        message_handler.messages = messages
+        message_handler.max_player_id = len(players)
 
-    responses = message_handler.send_and_resolve_all( messages, poll_every=1, poll_for=1000)
+    responses = message_handler.send_and_resolve_all(messages, poll_every=1, poll_for=1000)
 
-    # Now we have the actions we must process them according to game rules.
-    # BOTC TB order, poisoner, monk, spy, scarlett woman, imp, ravenskeeper, undertaker, empath, fortune teller,
-    # for our case,    poisoner, monk then all the rest. poisoner priority 1, monk 2, rest 3
-
+    # Process resolved actions by priority (demo logic)
     for priority in range(1, 5):
-        # process all actions of this priority (1 -> 4) in the order they appear
         for action in [a for a in responses if getattr(a, "priority", None) == priority]:
             player = get_player_by_number(players, action.playernumber)
             print(f"Processing actions for Player {action.playernumber} ({player['name']}): {action.response}")
             match player['role']:
                 case "Imp":
-                    # try to kill the target (we should have one player ID number as a param)
-                    
                     target_id = action.response[0] if action.response else None
                     target_player = get_player_by_number(players, target_id) if target_id else None
-                    if target_player and not target_player['dead'] :
+                    if target_player and not target_player['dead']:
                         target_player['dead'] = True
                         print(f" - Imp {player['name']} has killed {target_player['name']}.")
                     else:
                         print(f" - Imp {player['name']}'s target is invalid or already dead.")
-                    #TODO if kills self, change other evil to imp
                     if target_player and target_player['id'] == player['id']:
-                        # imp has killed self, select ONE alive evil player to become the new imp
                         evil_players = [p for p in players if p['alignment'] == 'Evil' and not p['dead'] and p['id'] != player['id']]
                         if evil_players:
-                            new_imp = evil_players[0]  # just pick the first one for simplicity
+                            new_imp = evil_players[0]
                             new_imp['role'] = 'Imp'
                             print(f"   - {new_imp['name']} has become the new Imp.")
-                    pass
-                
+
                 case "Poisoner":
-                    # we have 1 player id.
-                    # clear poisoned status from all players first
                     for p in players:
                         p['poisoned'] = False
-                        
+
                     target_id = action.response[0] if action.response else None
                     target_player = get_player_by_number(players, target_id) if target_id else None
                     if target_player and not target_player['dead']:
@@ -220,14 +230,12 @@ def nightphase(players: list) -> None:
                         print(f" - Poisoner {player['name']} has poisoned {target_player['name']}.")
                     else:
                         print(f" - Poisoner {player['name']}'s target is invalid or already dead.")
-                    pass
+
                 case "Monk":
-                    # we have 1 player id.
                     for p in players:
                         p['protected'] = False
-
                         if p['role'] == 'Soldier':
-                            p['protected'] = True  # Monk protects self by default
+                            p['protected'] = True
 
                     target_id = action.response[0] if action.response else None
                     target_player = get_player_by_number(players, target_id) if target_id else None
@@ -236,10 +244,8 @@ def nightphase(players: list) -> None:
                         print(f" - Monk {player['name']} has protected {target_player['name']}.")
                     else:
                         print(f" - Monk {player['name']}'s target is invalid or already dead.")
-                    pass
 
                 case "Fortune Teller":
-                    # we have 2 player ids.
                     pass
 
     return players

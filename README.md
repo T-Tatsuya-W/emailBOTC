@@ -1,29 +1,29 @@
-# emailBOTC — email-driven game toolkit
+# emailBOTC — email-driven game prototype
 
-This repository contains an early-stage email-driven game prototype where game prompts are sent to players via email and player actions are read back from email replies. The codebase provides:
-
-- an `EmailHandler` that sends and reads plain-text emails (SMTP + IMAP),
-- a small `Message` model and `MessageHandler` that sends game prompts and polls for replies, and
-- a minimal game driver (`main.py`) with a placeholder night-phase implementation demonstrating how messages are created and processed.
-
-This README documents the current game flow, the location of key classes/functions, how to configure and run the project, and a few notes/assumptions.
+This repository is an early prototype of an email-driven game (a simplified
+``BotC`` style night-phase demo). It contains a small email utility, a message
+handler that sends prompts and polls for replies, a minimal game driver, and
+unit tests that mock email operations so you can exercise the logic without
+real SMTP/IMAP credentials.
 
 ## Current game flow (what the code does today)
 
-1. The driver in `main.py` constructs an in-memory `players` list and calls `nightphase(players)`.
-2. `nightphase` creates a `Message` object for each player describing their night prompt (how many integer responses are expected and other metadata).
-3. The `MessageHandler` (in `utils/message_handler.py`) is created with an `EmailHandler` instance and the messages and calls `send_and_resolve_all` to:
-	 - send each player's prompt email (via `EmailHandler.send_email`),
-	 - poll the mail account using `EmailHandler.check_unread` for replies,
-	 - match incoming replies to outstanding messages by normalized subject and sender address,
-	 - extract integers from the reply body and validate them against `expected_response_number` and `max_player_id`,
-	 - mark messages resolved when valid responses are received (otherwise re-send the prompt with an error message).
-4. After `send_and_resolve_all` returns, `nightphase` processes resolved player actions according to role priorities (a simplified priority loop is implemented for roles like "Imp", "Poisoner", "Monk", etc.).
-
-Notes about this flow:
-- Matching replies depends on normalized subject text and sender addresses. Subjects are augmented with a unique id on send to reduce collisions.
-- Responses are parsed as integers (player id numbers). The handler enforces simple validation rules (range, no duplicate pair responses, and self-choice rules).
-- The implementation is intentionally simple and synchronous (polling). A production implementation could use IMAP IDLE, background workers, or a message queue.
+1. `main.py` builds a small in-memory `players` list and calls `nightphase(players)`.
+2. `nightphase` creates a `Message` dataclass instance per player describing the prompt
+	(subject/body, expected number of integer responses, player id, etc.).
+3. A `MessageHandler` (in `utils/message_handler.py`) is constructed with an
+	`EmailHandler` instance and the messages. `MessageHandler.send_and_resolve_all`
+	will:
+	- send each player's prompt via `EmailHandler.send_email`,
+	- poll for new messages using `EmailHandler.check_unread`,
+	- match replies to outstanding messages (subject normalization + sender address),
+	- extract integers from replies and validate them against the message's
+	  `expected_response_number` and the configured `max_player_id`,
+	- mark messages resolved when valid responses are received; otherwise it
+	  re-sends the prompt with an error note.
+4. When `send_and_resolve_all` completes, `nightphase` applies a simple priority
+	loop to process resolved player actions (demo logic for roles such as Imp,
+	Poisoner, Monk, Fortune Teller is included as a placeholder).
 
 ## File / class / function organization
 
@@ -52,10 +52,12 @@ Notes about this flow:
 		- addresses_match(a, b) and normalize_subject(s) — small helpers used by the handler.
 
 - `utils/demo_email_handler.py`
-	- A small interactive demo harness that can send a test message, list unread messages, or start a periodic sender. Useful for manual testing outside the game flow.
+	- A small interactive demo harness for manual testing of `EmailHandler`.
 
 - `tests/test_message_handler.py`
-	- A set of unit tests that currently exercise MessageHandler behaviors. Note: some tests reference helper names that used to exist; the code and test expectations may be slightly out-of-sync. See "Notes & known issues" below.
+	- Unit tests which use a mocked `EmailHandler` to exercise `MessageHandler`'s
+		logic without network I/O. The repository includes a pytest-style layout
+		that shows how to provide a mock handler and sample inbox events.
 
 ## Configuration and running
 
@@ -92,14 +94,29 @@ python utils/demo_email_handler.py
 python -m pytest -q
 ```
 
-Note: the repository uses simple unit tests that mock the `EmailHandler`. Because the test file and the current `MessageHandler` implementation have diverged slightly (some helper names and APIs changed during development), tests may need small updates to match the current `MessageHandler` API.
+The tests are written to avoid real SMTP/IMAP activity by injecting a mock
+`EmailHandler` implementation. See `tests/test_message_handler.py` for the
+fixture examples and test layout.
 
 ## Notes & known issues / assumptions
 
-- The game code in `main.py` is a prototype and uses a static `players` list and simple role-handling logic. It is not a finished game engine; it's an integration demo showing how email prompts and replies could be wired into a turn-based/night-phase flow.
-- Reply matching relies on normalized subject and sender address; if email clients rewrite subjects aggressively this may fail.
-- `EmailHandler._clean_body` is best-effort and may not strip all quoted content for complex HTML messages.
-- Tests in `tests/test_message_handler.py` may reference older API names (for example `parse_response_integers`, `monitor_until_resolved`, or `send_night_emails`) — these need to be reconciled with `MessageHandler.send_and_resolve_all` and the current helpers.
+
+Known issues / assumptions:
+
+- `main.py` is a prototype demo that uses a static `players` list and simple
+	role-processing logic. It's a place to iterate on game behavior rather than a
+	finished engine.
+- Matching replies depends on normalized subject texts and sender addresses.
+	Some email clients may rewrite subjects or headers which can break matching.
+- The plain-text body cleaning (`EmailHandler._clean_body`) is a best-effort
+	approach and may not remove every quoted block for complex HTML emails.
+
+If you want, I can also:
+
+- update or extend the unit tests to cover more game flows (examples: invalid
+	response handling, duplicate responses, self-target validation), or
+- add a small mocked runner that simulates replies so the night-phase can be
+	exercised end-to-end in CI without real email credentials.
 
 ## Suggested next steps (small, low-risk)
 
