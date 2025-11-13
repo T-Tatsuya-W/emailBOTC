@@ -13,6 +13,7 @@ from typing import Optional
 
 from utils.email_handler import EmailHandler
 from utils.message_handler import Message, MessageHandler
+from utils.player_factory import make_players
 from typing import Optional, Dict, Any
 
 
@@ -50,81 +51,12 @@ def parse_cli(argv: Optional[list] = None) -> Optional[int]:
 def main() -> None:
     opt = parse_cli() # tries to parse integer parameter. 
     default_email = "tobytw312@gmail.com"
-    
-    players = [{
-        "id": 1,
-        "email": default_email,
-        "name": "impPlayer",
-        "alignment": "Evil",
-        "role": "Imp",
-        "drunk": False,
-        "poisoned": False,
-        "dead": False,
-        "canVote": True,
-        "protected": False,
-        "nightResponse": 1,
-        "canChooseSelf": True,
-        "nightActionPriority": 3
-    }, {
-        "id": 2,
-        "email": default_email,
-        "name": "poisonerPlayer",
-        "alignment": "Evil",
-        "role": "Poisoner",
-        "drunk": False,     
-        "poisoned": False,
-        "dead": False,
-        "canVote": True,
-        "protected": False,
-        "nightResponse": 1,
-        "canChooseSelf": False,
-        "nightActionPriority": 1
-    }, {
-        "id": 3,
-        "email": default_email,
-        "name": "monkPlayer",
-        "alignment": "Good",
-        "role": "Monk",
-        "drunk": False,     
-        "poisoned": False,
-        "dead": False,
-        "canVote": True,
-        "protected": False,
-        "nightResponse": 1,
-        "canChooseSelf": False,
-        "nightActionPriority": 2
-    }, {
-        "id": 4,
-        "email": default_email,
-        "name": "fortuneTellerPlayer",
-        "alignment": "Good",
-        "role": "Fortune Teller",
-        "drunk": False,
-        "poisoned": False,
-        "dead": False,
-        "canVote": True,
-        "protected": False,
-        "nightResponse": 2,
-        "canChooseSelf": False,
-        "nightActionPriority": 4
-    }, {
-        "id": 5,
-        "email": default_email,
-        "name": "washerwomanPlayer",
-        "alignment": "Good",
-        "role": "Washerwoman",
-        "drunk": False,
-        "poisoned": False,
-        "dead": False,
-        "canVote": True,
-        "protected": False,
-        "nightResponse": 0,
-        "canChooseSelf": True,
-        "nightActionPriority": 4
-    }]
 
+    # Create the canonical player roster using the shared factory. Callers can
+    # override names/emails in the future; for now we use the default email for
+    # all players to keep parity with earlier hard-coded behaviour.
+    players = make_players(default_email=default_email)
 
-    
     players = nightphase(players)
     print(players)
 
@@ -161,8 +93,39 @@ def nightphase(
 
     print(player_states)
 
+    # For compatibility, nightphase now delegates to two helper functions:
+    #  - get_night_actions(...) -> list[Message]
+    #  - perform_night_actions(players, actions) -> players
+    print("Starting night phase with players:")
+
+    player_states = ""
+    for player in players:
+        player_states += f"- {player['name']} (is {'dead' if player['dead'] else 'alive'})\n"
+
+    print(player_states)
+
+    actions = get_night_actions(players, message_handler=message_handler, email_handler=email_handler)
+    return perform_night_actions(players, actions)
+
+
+def get_night_actions(
+    players: list,
+    message_handler: Optional[MessageHandler] = None,
+    email_handler: Optional[EmailHandler] = None,
+    poll_every: int = 1,
+    poll_for: int = 1000,
+) -> list[Message]:
+    """Construct night prompts, send them and collect resolved Message actions.
+
+    Returns a list of Message objects which have `response` populated and
+    `resolved` set according to the MessageHandler logic.
+    """
     # Build messages for each player
     messages: list[Message] = []
+    player_states = ""
+    for player in players:
+        player_states += f"- {player['name']} (is {'dead' if player['dead'] else 'alive'})\n"
+
     for player in players:
         subject = "Night Phase Actions"
         body = (
@@ -195,8 +158,16 @@ def nightphase(
         message_handler.messages = messages
         message_handler.max_player_id = len(players)
 
-    responses = message_handler.send_and_resolve_all(messages, poll_every=1, poll_for=1000)
+    responses = message_handler.send_and_resolve_all(messages, poll_every=poll_every, poll_for=poll_for)
+    return responses
 
+
+def perform_night_actions(players: list, responses: list[Message]) -> list:
+    """Apply actions (responses) to the players list according to priority.
+
+    This function contains the role resolution logic previously embedded in
+    `nightphase`. It mutates and returns the players list.
+    """
     # Process resolved actions by priority (demo logic)
     for priority in range(1, 5):
         for action in [a for a in responses if getattr(a, "priority", None) == priority]:
@@ -207,25 +178,25 @@ def nightphase(
                     target_id = action.response[0] if action.response else None
                     target_player = get_player_by_number(players, target_id) if target_id else None
                     if target_player and not target_player['dead']:
-                        target_player['dead'] = True
-                        print(f" - Imp {player['name']} has killed {target_player['name']}.")
+                        # Respect protection: a protected player cannot be killed
+                        if target_player.get('protected'):
+                            print(f" - Imp {player['name']}'s target {target_player['name']} was protected; kill prevented.")
+                        else:
+                            target_player['dead'] = True
+                            print(f" - Imp {player['name']} has killed {target_player['name']}.")
                     else:
                         print(f" - Imp {player['name']}'s target is invalid or already dead.")
-                    if target_player and target_player['id'] == player['id']:
-                        evil_players = [p for p in players if p['alignment'] == 'Evil' and not p['dead'] and p['id'] != player['id']]
-                        if evil_players:
-                            new_imp = evil_players[0]
-                            new_imp['role'] = 'Imp'
-                            print(f"   - {new_imp['name']} has become the new Imp.")
 
                 case "Poisoner":
+                    # Clear previous poisoned flags for this night
                     for p in players:
                         p['poisoned'] = False
 
+                    # Poisoner marks target as poisoned; poisoning does not
+                    # immediately kill the target (it will affect later logic).
                     target_id = action.response[0] if action.response else None
                     target_player = get_player_by_number(players, target_id) if target_id else None
                     if target_player and not target_player['dead']:
-                        target_player['dead'] = True
                         target_player['poisoned'] = True
                         print(f" - Poisoner {player['name']} has poisoned {target_player['name']}.")
                     else:
@@ -237,6 +208,11 @@ def nightphase(
                         if p['role'] == 'Soldier':
                             p['protected'] = True
 
+                    # If the monk is poisoned they cannot successfully protect
+                    if player.get('poisoned'):
+                        print(f" - Monk {player['name']} is poisoned and cannot protect anyone.")
+                        continue
+
                     target_id = action.response[0] if action.response else None
                     target_player = get_player_by_number(players, target_id) if target_id else None
                     if target_player and not target_player['dead']:
@@ -246,11 +222,39 @@ def nightphase(
                         print(f" - Monk {player['name']}'s target is invalid or already dead.")
 
                 case "Fortune Teller":
-                    pass
+                    # Fortune Teller investigates two players. This is informational
+                    # only: attach a short reveal string to the Fortune Teller's
+                    # player state so it can be presented to them next round.
+                    targets = action.response or []
+                    ft_player = player
+                    if len(targets) < 2:
+                        ft_player['info_for_player'] = "insufficient targets"
+                        print(f" - Fortune Teller {player['name']} did not provide two targets.")
+                        continue
+
+                    t1 = get_player_by_number(players, targets[0])
+                    t2 = get_player_by_number(players, targets[1])
+                    if not t1 or not t2:
+                        ft_player['info_for_player'] = "invalid target(s)"
+                        print(f" - Fortune Teller {player['name']} targeted invalid player(s).")
+                        continue
+
+                    # For now, the simple rule: if either target is the Imp OR
+                    # matches the Fortune Teller's configured `red_herring` id,
+                    # the FT should be told that at least one is evil.
+                    red_herring = ft_player.get('red_herring')
+                    red_hit = False
+                    if red_herring is not None:
+                        red_hit = (targets[0] == red_herring) or (targets[1] == red_herring)
+
+                    if t1.get('role') == 'Imp' or t2.get('role') == 'Imp' or red_hit:
+                        ft_player['info_for_player'] = "at least one is evil"
+                        print(f" - Fortune Teller {player['name']} learned at least one target is evil.")
+                    else:
+                        ft_player['info_for_player'] = "neither is evil"
+                        print(f" - Fortune Teller {player['name']} learned neither target is evil.")
 
     return players
-
-
 def get_player_by_number(players: list, number: int) -> Optional[Dict[str, Any]]:
     """Return the player dict whose 'id' matches number, or None if not found."""
     for player in players:
