@@ -222,39 +222,47 @@ def perform_night_actions(players: list, responses: list[Message]) -> list:
                         print(f" - Monk {player['name']}'s target is invalid or already dead.")
 
                 case "Fortune Teller":
-                    # Fortune Teller investigates two players. This is informational
-                    # only: attach a short reveal string to the Fortune Teller's
-                    # player state so it can be presented to them next round.
+                    # Fortune Teller investigates two players and learns whether any
+                    # are evil (Imp) or the configured red herring. The result is
+                    # stored as a boolean: True if at least one target appears evil
+                    # to the Fortune Teller, False otherwise. Invalid inputs store
+                    # None to indicate no usable information was obtained.
                     targets = action.response or []
                     ft_player = player
                     if len(targets) < 2:
-                        ft_player['info_for_player'] = "insufficient targets"
+                        ft_player['info_for_player'] = None
                         print(f" - Fortune Teller {player['name']} did not provide two targets.")
                         continue
 
                     t1 = get_player_by_number(players, targets[0])
                     t2 = get_player_by_number(players, targets[1])
                     if not t1 or not t2:
-                        ft_player['info_for_player'] = "invalid target(s)"
+                        ft_player['info_for_player'] = None
                         print(f" - Fortune Teller {player['name']} targeted invalid player(s).")
                         continue
 
-                    # For now, the simple rule: if either target is the Imp OR
-                    # matches the Fortune Teller's configured `red_herring` id,
-                    # the FT should be told that at least one is evil.
                     red_herring = ft_player.get('red_herring')
                     red_hit = False
                     if red_herring is not None:
                         red_hit = (targets[0] == red_herring) or (targets[1] == red_herring)
 
-                    if t1.get('role') == 'Imp' or t2.get('role') == 'Imp' or red_hit:
-                        ft_player['info_for_player'] = "at least one is evil"
+                    imp_hit = t1.get('role') == 'Imp' or t2.get('role') == 'Imp'
+                    info_result = imp_hit or red_hit
+
+                    if ft_player.get('poisoned'):
+                        # A poisoned Fortune Teller learns incorrect information.
+                        info_result = not info_result
+
+                    ft_player['info_for_player'] = info_result
+
+                    if info_result:
                         print(f" - Fortune Teller {player['name']} learned at least one target is evil.")
                     else:
-                        ft_player['info_for_player'] = "neither is evil"
                         print(f" - Fortune Teller {player['name']} learned neither target is evil.")
 
     return players
+
+
 def get_player_by_number(players: list, number: int) -> Optional[Dict[str, Any]]:
     """Return the player dict whose 'id' matches number, or None if not found."""
     for player in players:

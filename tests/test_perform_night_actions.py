@@ -42,7 +42,7 @@ def test_fortune_teller_investigate_no_state_change():
 
     # Fortune Teller should receive an informational reveal stored on their player state
     ft = next(p for p in res if p["id"] == 5)
-    assert ft.get("info_for_player") == "neither is evil"
+    assert ft.get("info_for_player") is False
 
 
 def test_fortune_teller_detects_imp():
@@ -55,7 +55,7 @@ def test_fortune_teller_detects_imp():
     res = perform_night_actions(players, [ft_action])
 
     ft = next(p for p in res if p["id"] == 5)
-    assert ft.get("info_for_player") == "at least one is evil"
+    assert ft.get("info_for_player") is True
 
 
 def test_fortune_teller_red_herring_counts_as_evil():
@@ -72,7 +72,7 @@ def test_fortune_teller_red_herring_counts_as_evil():
     res = perform_night_actions(players, [ft_action])
 
     ft_after = next(p for p in res if p["id"] == 5)
-    assert ft_after.get("info_for_player") == "at least one is evil"
+    assert ft_after.get("info_for_player") is True
 
 
 def test_monk_protects_from_imp_kill():
