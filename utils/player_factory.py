@@ -57,7 +57,14 @@ def make_players(names: Optional[List[str]] = None, emails: Optional[List[str]] 
 
         # default extra fields used by tests
         if player["role"] == "Fortune Teller":
-            player["red_herring"] = None
+            # Assign a default red herring: the first other good player in the roster.
+            red_herring_id = None
+            for existing in players:
+                if existing.get("alignment") == "Good" and existing.get("id") != player["id"]:
+                    red_herring_id = existing["id"]
+                    break
+
+            player["red_herring"] = red_herring_id
             player["info_for_player"] = None
 
         players.append(player)
