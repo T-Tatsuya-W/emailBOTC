@@ -54,6 +54,7 @@ check_unread(mark_seen: bool = False) -> List[Dict[str, Any]]
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import os
 import smtplib
 import imaplib
