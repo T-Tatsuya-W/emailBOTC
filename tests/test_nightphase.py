@@ -98,7 +98,7 @@ def test_imp_kills_via_email():
 
     players = make_players(imp_target_email="target@example.com")
 
-    target_player = next(p for p in players if p["role"] == "Villager")
+    target_player = next(p for p in players if  p["role"] == "Villager")
 
     # Configure auto-replies: when the Imp's prompt is sent to imp@example.com
     # it should reply with the integer '2' to target player id 2, but since the
