@@ -55,13 +55,16 @@ def test_imp_kills_target_with_simple_handler():
 
     players = make_players()
 
-    # Configure responses: player 1 chooses target id 2. Keys may be ints
+    imp = next(p for p in players if p["role"] == "Imp")
+    target_player = next(p for p in players if p["role"] == "Villager")
+
+    # Configure responses: Imp chooses the villager. Keys may be ints
     # (player number) or the player's email address.
-    responses = {1: "2"}
+    responses = {imp["id"]: str(target_player["id"])}
 
     handler = SimpleMessageHandler(responses=responses)
 
     result = nightphase(players, message_handler=handler)
 
-    target = next(p for p in result if p["id"] == 2)
+    target = next(p for p in result if p["role"] == "Villager")
     assert target["dead"] is True

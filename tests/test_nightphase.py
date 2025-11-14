@@ -104,6 +104,8 @@ def test_imp_kills_target_via_email_replies():
 
     players = make_players(imp_target_email="target@example.com")
 
+    target_player = next(p for p in players if p["role"] == "Villager")
+
     # Configure auto-replies: when the Imp's prompt is sent to imp@example.com
     # it should reply with the integer '2' to target player id 2, but since the
     # Imp is the sender, we want the Imp's email to reply with the chosen id.
@@ -111,7 +113,7 @@ def test_imp_kills_target_via_email_replies():
     # player replies come "from" that same address. Therefore we set the
     # response for the Imp's email to be '2' (the target id).
     responses = {
-        "imp@example.com": "2",
+        "imp@example.com": str(target_player["id"]),
         # target has no action but we could also define one
         "target@example.com": "",
     }
@@ -124,7 +126,7 @@ def test_imp_kills_target_via_email_replies():
     result_players = nightphase(players, email_handler=mock_eh)
 
     # Find target player and assert they were killed by the Imp
-    target = next(p for p in result_players if p["id"] == 2)
+    target = next(p for p in result_players if p["role"] == "Villager")
     assert target["dead"] is True
 
     # Basic sanity: ensure the mock recorded outgoing emails

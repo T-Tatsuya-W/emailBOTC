@@ -8,17 +8,33 @@ from main import perform_night_actions
 from utils.player_factory import make_players
 
 
+def get_player(players, role):
+    return next(p for p in players if p["role"] == role)
+
+
 def test_monk_protects():
     players = make_players()
 
-    # Monk (3) protects player 4 (priority 2)
-    monk_action = Message(priority=2, resolved=True, response=[4], playernumber=3)
-    # Imp (1) tries to kill player 4 (priority 3)
-    imp_action = Message(priority=3, resolved=True, response=[4], playernumber=1)
+    monk = get_player(players, "Monk")
+    imp = get_player(players, "Imp")
+    villager = get_player(players, "Villager")
+
+    monk_action = Message(
+        priority=2,
+        resolved=True,
+        response=[villager["id"]],
+        playernumber=monk["id"],
+    )
+    imp_action = Message(
+        priority=3,
+        resolved=True,
+        response=[villager["id"]],
+        playernumber=imp["id"],
+    )
 
     res = perform_night_actions(players, [monk_action, imp_action])
 
-    target = next(p for p in res if p["id"] == 4)
+    target = get_player(res, "Villager")
     assert target["protected"] is True
     assert target["dead"] is False
 
@@ -27,15 +43,27 @@ def test_monk_poisoned_cannot_protect():
     # Poison the Monk (id 3) and then have the Monk try to protect player 4.
     players = make_players()
 
-    # Poisoner (2) poisons the Monk (3)
-    poison_action = Message(priority=1, resolved=True, response=[3], playernumber=2)
-    # Monk (3) then attempts to protect player 4 (priority 2)
-    monk_action = Message(priority=2, resolved=True, response=[4], playernumber=3)
+    poisoner = get_player(players, "Poisoner")
+    monk = get_player(players, "Monk")
+    villager = get_player(players, "Villager")
+
+    poison_action = Message(
+        priority=1,
+        resolved=True,
+        response=[monk["id"]],
+        playernumber=poisoner["id"],
+    )
+    monk_action = Message(
+        priority=2,
+        resolved=True,
+        response=[villager["id"]],
+        playernumber=monk["id"],
+    )
 
     res = perform_night_actions(players, [poison_action, monk_action])
 
-    monk = next(p for p in res if p["id"] == 3)
-    target = next(p for p in res if p["id"] == 4)
+    monk = get_player(res, "Monk")
+    target = get_player(res, "Villager")
 
     # Monk should be poisoned
     assert monk["poisoned"] is True
@@ -47,17 +75,34 @@ def test_monk_poisoned_cannot_protect():
 def test_poisoned_monk_allows_imp_kill():
     players = make_players()
 
-    # Poisoner (2) poisons the Monk (3)
-    poison_action = Message(priority=1, resolved=True, response=[3], playernumber=2)
-    # Monk (3) attempts to protect player 4 (priority 2)
-    monk_action = Message(priority=2, resolved=True, response=[4], playernumber=3)
-    # Imp (1) attempts to kill player 4 (priority 3)
-    imp_action = Message(priority=3, resolved=True, response=[4], playernumber=1)
+    poisoner = get_player(players, "Poisoner")
+    monk = get_player(players, "Monk")
+    imp = get_player(players, "Imp")
+    villager = get_player(players, "Villager")
+
+    poison_action = Message(
+        priority=1,
+        resolved=True,
+        response=[monk["id"]],
+        playernumber=poisoner["id"],
+    )
+    monk_action = Message(
+        priority=2,
+        resolved=True,
+        response=[villager["id"]],
+        playernumber=monk["id"],
+    )
+    imp_action = Message(
+        priority=3,
+        resolved=True,
+        response=[villager["id"]],
+        playernumber=imp["id"],
+    )
 
     res = perform_night_actions(players, [poison_action, monk_action, imp_action])
 
-    monk = next(p for p in res if p["id"] == 3)
-    target = next(p for p in res if p["id"] == 4)
+    monk = get_player(res, "Monk")
+    target = get_player(res, "Villager")
 
     # Monk is poisoned
     assert monk["poisoned"] is True
