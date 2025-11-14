@@ -46,12 +46,8 @@ def make_players():
     ]
 
 
-def test_imp_kills_target_with_simple_handler():
-    """Run a night where player 1 (Imp) chooses player 2.
-
-    This demonstrates passing a full players list and a responses mapping and
-    asserting the resulting players list is updated as expected.
-    """
+def test_imp_kills_with_simple_handler():
+    """imp kills target with simple handler"""
 
     players = make_players()
 

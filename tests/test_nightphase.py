@@ -93,14 +93,8 @@ def make_players(imp_target_email: str = "target@example.com"):
     ]
 
 
-def test_imp_kills_target_via_email_replies():
-    """Template test:
-
-    - Injects an AutoReplyEmailHandler which will reply to the Imp's prompt
-      with the target player's id (so the Imp attempts to kill that player).
-    - Calls `nightphase(...)` with the mock email handler.
-    - Asserts the target player's `dead` flag becomes True.
-    """
+def test_imp_kills_via_email():
+    """imp kills target via email replies"""
 
     players = make_players(imp_target_email="target@example.com")
 
