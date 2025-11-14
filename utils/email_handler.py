@@ -53,6 +53,7 @@ check_unread(mark_seen: bool = False) -> List[Dict[str, Any]]
 
 from __future__ import annotations
 
+import importlib
 import os
 import smtplib
 import imaplib
@@ -61,7 +62,12 @@ import re
 from email.message import EmailMessage
 from typing import List, Dict, Optional
 
-from dotenv import load_dotenv
+_dotenv_spec = importlib.util.find_spec("dotenv")
+if _dotenv_spec is not None:
+    load_dotenv = importlib.import_module("dotenv").load_dotenv
+else:
+    def load_dotenv():
+        return False
 
 
 load_dotenv()
