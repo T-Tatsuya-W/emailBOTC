@@ -59,6 +59,7 @@ import os
 import smtplib
 import imaplib
 import email
+import ssl
 import re
 from email.message import EmailMessage
 from typing import List, Dict, Optional
@@ -242,10 +243,7 @@ class EmailHandler:
 									msg['References'] = refs
 								except Exception:
 									pass
-					try:
-						imap.logout()
-					except Exception:
-						pass
+
 			except Exception as exc:
 				raise RuntimeError(f"Failed to fetch message for reply_uid={reply_uid}: {exc}")
 
@@ -401,8 +399,18 @@ class EmailHandler:
 							# best-effort, ignore marking failures
 							pass
 
-				imap.logout()
+				pass
 		except Exception as exc:  # pragma: no cover - environment-specific
+			# If the connection was closed unexpectedly (SSL EOF / IMAP abort)
+			# treat this as a transient connection issue and return whatever
+			# results were successfully collected so far instead of raising.
+			try:
+				if isinstance(exc, (ssl.SSLEOFError, imaplib.IMAP4.abort)):
+					return results
+			except Exception:
+				# If checking the exception type fails for any reason, fall
+				# through to raising a RuntimeError below.
+				pass
 			raise RuntimeError(f"Failed to check unread messages: {exc}")
 
 		return results
