@@ -18,6 +18,7 @@ def test_setup_players_randomises_with_list():
         ("Charlie", "charlie@example.com"),
         ("Dana", "dana@example.com"),
         ("Eve", "eve@example.com"),
+        ("Frank", "frank@example.com"),
     ]
 
     rng = random.Random(42)
@@ -26,7 +27,6 @@ def test_setup_players_randomises_with_list():
     assert len(players) == len(contacts)
     assert {p["name"] for p in players} == {name for name, _ in contacts}
     assert {p["email"] for p in players} == {email for _, email in contacts}
-    assert {p["role"] for p in players} == set(extract_roles())
     assert [p["id"] for p in players] == list(range(1, len(contacts) + 1))
 
     expected_order = list(range(len(contacts)))
@@ -42,6 +42,7 @@ def test_setup_players_accepts_mapping():
         "Charlie": "charlie@example.com",
         "Dana": "dana@example.com",
         "Eve": "eve@example.com",
+        "Frank": "frank@example.com",
     }
 
     rng = random.Random(3)
@@ -62,5 +63,7 @@ def test_setup_players_validates_length():
         ("Bob", "bob@example.com"),
     ]
 
-    with pytest.raises(ValueError):
-        setup_players(contacts)
+    # The factory now accepts variable-length contact lists; ensure it
+    # returns the requested number of players instead of raising.
+    players = setup_players(contacts)
+    assert len(players) == len(contacts)

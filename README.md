@@ -1,5 +1,28 @@
 # emailBOTC — email-driven game prototype
 
+**Quickstart (Windows PowerShell)**
+
+- Create and activate a virtualenv, then install requirements:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip setuptools wheel
+pip install -r requirements.txt
+```
+
+- Run the demo:
+
+```powershell
+python main.py
+```
+
+- Run tests:
+
+```powershell
+python -m pytest -q
+```
+
 This repository is an early prototype of an email-driven game (a simplified
 ``BotC`` style night-phase demo). It contains a small email utility, a message
 handler that sends prompts and polls for replies, a minimal game driver, and

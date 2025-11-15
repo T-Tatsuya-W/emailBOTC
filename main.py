@@ -1,36 +1,27 @@
 """Skeleton game loop entrypoint.
 
 This file is intentionally minimal. It accepts a single integer CLI
-parameter and dispatches to a placeholder `run_option` function where
-game phases (night/day/etc.) will be wired in later.
-
-The script will exit with code 2 for invalid usage or non-integer args.
+parameter and dispatches to the nightphase implementation which lives in
+`utils/nightphase.py` after refactoring.
 """
 from __future__ import annotations
 
 import sys
-from typing import Optional
+from typing import Optional, Sequence, Tuple
 
-from utils.email_handler import EmailHandler
-from utils.message_handler import Message, MessageHandler
-from utils.player_factory import make_players
-from typing import Optional, Dict, Any
+from utils.player_factory import make_players, setup_players
+from utils.nightphase import nightphase, perform_night_actions, get_player_by_number
+from utils.dayphase import dayphase
+
+# Re-export helpers for older imports/tests that expect them on `main`.
+__all__ = ["nightphase", "perform_night_actions", "get_player_by_number"]
 
 
-
-def parse_cli(argv: Optional[list] = None) -> Optional[int]:
-    """Parse command-line args and return the integer option or None.
-
-    If no parameter is provided, return None to indicate default behaviour.
-    This function purposely does not exit the process - callers may decide
-    how to handle missing/invalid parameters. Help flags still print usage
-    and exit.
-    """
+def parse_cli(argv: Optional[list] = None) -> Optional[str]:
     if argv is None:
         argv = sys.argv
 
     if len(argv) < 2:
-        # No argument provided; caller will handle default/run-without-param.
         return None
 
     arg = argv[1]
@@ -38,242 +29,118 @@ def parse_cli(argv: Optional[list] = None) -> Optional[int]:
         print("Usage: python main.py <option_int>")
         raise SystemExit(0)
 
-    try:
-        opt = int(arg)
-    except ValueError:
-        # Invalid integer - treat as no parameter for now.
-        print(f"Invalid integer parameter: {arg!r}; proceeding without parameter.")
-        return None
+    # Support a "d" parameter to run with the default player set.
+    if arg in ("d", "-d", "D"):
+        return "d"
 
-    return opt
+    # Non-"d" arguments are treated as interactive mode trigger (return string).
+    return arg
+
+
+def get_player_info() -> Sequence[Tuple[str, str]]:
+    """Prompt user for a player count, then collect player names and emails.
+
+    Returns a list of (name, email) tuples suitable for `setup_players`.
+    The current game uses a fixed role roster; the function therefore
+    enforces the canonical player count and asks the user to accept the
+    default if they attempt a different size.
+    """
+    default_players = make_players()
+    default_count = len(default_players)
+
+    while True:
+        try:
+            raw = input(f"Number of players [default {default_count}]: ").strip()
+        except EOFError:
+            print("\nNo input received; using default players.")
+            raw = ""
+
+        if raw == "":
+            num = default_count
+            break
+
+        try:
+            num = int(raw)
+        except ValueError:
+            print("Please enter a valid integer (or press Enter to accept default).")
+            continue
+
+        # Enforce a minimum number of players for the game
+        if num < 5:
+            print("Minimum number of players is 5. Please enter a larger number.")
+            continue
+        # Enforce a maximum number of players for the CLI game definition
+        if num >= 10:
+            print("Maximum number of players for this CLI mode is 9. Please enter a smaller number.")
+            continue
+
+        break
+
+    contacts = []
+    for i in range(1, num + 1):
+        default_name = default_players[i - 1]["name"] if i - 1 < len(default_players) else f"Player{i}"
+        try:
+            name = input(f"Player {i} name [default: {default_name}]: ").strip() or default_name
+        except EOFError:
+            name = default_name
+
+        try:
+            email = input(f"Player {i} email [default: {default_players[i - 1]['email']}]: ").strip() or default_players[i - 1]["email"]
+        except EOFError:
+            email = default_players[i - 1]["email"]
+
+        contacts.append((name, email))
+
+    return contacts
 
 
 def main() -> None:
-    opt = parse_cli() # tries to parse integer parameter. 
+    opt = parse_cli()
     default_email = "tobytw312@gmail.com"
 
-    # Create the canonical player roster using the shared factory. Callers can
-    # override names/emails in the future; for now we use the default email for
-    # all players to keep parity with earlier hard-coded behaviour.
-    players = make_players(default_email=default_email)
-
-    players = nightphase(players)
-    print(players)
-
-
-
-
-
-def nightphase(
-    players: list,
-    message_handler: Optional[MessageHandler] = None,
-    email_handler: Optional[EmailHandler] = None,
-) -> list:
-    """Run a simplified night phase.
-
-    This function now accepts optional `message_handler` and `email_handler`
-    parameters so test code can inject mocks. If a handler is not provided the
-    function will construct the default implementations.
-
-    Args:
-        players: list of player dicts.
-        message_handler: optional MessageHandler instance to use.
-        email_handler: optional EmailHandler instance to use (used to create a
-                       MessageHandler if message_handler is not provided).
-
-    Returns:
-        The (possibly mutated) players list.
-    """
-
-    print("Starting night phase with players:")
-
-    player_states = ""
-    for player in players:
-        player_states += f"- {player['name']} (is {'dead' if player['dead'] else 'alive'})\n"
-
-    print(player_states)
-
-    # For compatibility, nightphase now delegates to two helper functions:
-    #  - get_night_actions(...) -> list[Message]
-    #  - perform_night_actions(players, actions) -> players
-    print("Starting night phase with players:")
-
-    player_states = ""
-    for player in players:
-        player_states += f"- {player['name']} (is {'dead' if player['dead'] else 'alive'})\n"
-
-    print(player_states)
-
-    actions = get_night_actions(players, message_handler=message_handler, email_handler=email_handler)
-    return perform_night_actions(players, actions)
-
-
-def get_night_actions(
-    players: list,
-    message_handler: Optional[MessageHandler] = None,
-    email_handler: Optional[EmailHandler] = None,
-    poll_every: int = 1,
-    poll_for: int = 1000,
-) -> list[Message]:
-    """Construct night prompts, send them and collect resolved Message actions.
-
-    Returns a list of Message objects which have `response` populated and
-    `resolved` set according to the MessageHandler logic.
-    """
-    # Build messages for each player
-    messages: list[Message] = []
-    player_states = ""
-    for player in players:
-        player_states += f"- {player['name']} (is {'dead' if player['dead'] else 'alive'})\n"
-
-    for player in players:
-        subject = "Night Phase Actions"
-        body = (
-            f"Hello {player['name']},\nIt's night time! current players:\n{player_states}\n "
-            f"Please respond with your actions. You need to respond with {player['nightResponse']} integer(s)."
-        )
-        message = Message(
-            priority=player['nightActionPriority'],
-            address=player['email'],
-            subject=subject + "player" + str(player['id']),
-            body=body,
-            resolved=False,
-            response=[],
-            playernumber=player["id"],
-            responseBody="",
-            expected_response_number=player["nightResponse"],
-            playerName=player["name"],
-            canChooseSelf=player["canChooseSelf"],
-        )
-        messages.append(message)
-
-    # Prepare handlers: allow injection for testing, otherwise construct defaults
-    if email_handler is None:
-        email_handler = EmailHandler()
-
-    if message_handler is None:
-        message_handler = MessageHandler(email_handler, messages, max_player_id=len(players))
+    if opt == "d":
+        players = make_players(default_email=default_email)
     else:
-        # ensure the provided handler uses this run's messages and max_player_id
-        message_handler.messages = messages
-        message_handler.max_player_id = len(players)
+        contacts = get_player_info()
+        players = setup_players(contacts)
 
-    responses = message_handler.send_and_resolve_all(messages, poll_every=poll_every, poll_for=poll_for)
-    return responses
+    # Debug: print every player and all stored values before starting rounds
+    print("\n--- Players (initial) ---")
+    for p in players:
+        print(p)
+    print("--- end players ---\n")
 
+    round_num = 1
+    while True:
+        print(f"\n=== Night {round_num} ===")
+        players = nightphase(players)
 
-def perform_night_actions(players: list, responses: list[Message]) -> list:
-    """Apply actions (responses) to the players list according to priority.
+        # Run day phase (currently a mock that prints player states)
+        print(f"\n=== Day {round_num} ===")
+        # Run dayphase and wait longer for player acknowledgements/nominations
+        players = dayphase(players, poll_every=2, poll_for=300)
 
-    This function contains the role resolution logic previously embedded in
-    `nightphase`. It mutates and returns the players list.
-    """
-    # Process resolved actions by priority (demo logic)
-    for priority in range(1, 5):
-        for action in [a for a in responses if getattr(a, "priority", None) == priority]:
-            player = get_player_by_number(players, action.playernumber)
-            print(f"Processing actions for Player {action.playernumber} ({player['name']}): {action.response}")
-            match player['role']:
-                case "Imp":
-                    target_id = action.response[0] if action.response else None
-                    target_player = get_player_by_number(players, target_id) if target_id else None
-                    if target_player and not target_player['dead']:
-                        # Respect protection: a protected player cannot be killed
-                        if target_player.get('protected'):
-                            print(f" - Imp {player['name']}'s target {target_player['name']} was protected; kill prevented.")
-                        else:
-                            target_player['dead'] = True
-                            print(f" - Imp {player['name']} has killed {target_player['name']}.")
-                    else:
-                        print(f" - Imp {player['name']}'s target is invalid or already dead.")
+        # Check win state: if exactly 2 players are alive and one is the Imp,
+        # Evil wins. Print a terminal message and end the game.
+        alive = [p for p in players if not p.get("dead")]
+        alive_count = len(alive)
+        if alive_count == 2 and any(p.get("role") == "Imp" for p in alive):
+            print("Game over: Evil wins (Imp remains among two alive players).")
+            break
 
-                case "Poisoner":
-                    # Clear previous poisoned flags for this night
-                    for p in players:
-                        p['poisoned'] = False
+        round_num += 1
 
-                    # Poisoner marks target as poisoned; poisoning does not
-                    # immediately kill the target (it will affect later logic).
-                    target_id = action.response[0] if action.response else None
-                    target_player = get_player_by_number(players, target_id) if target_id else None
-                    if target_player and not target_player['dead']:
-                        target_player['poisoned'] = True
-                        print(f" - Poisoner {player['name']} has poisoned {target_player['name']}.")
-                    else:
-                        print(f" - Poisoner {player['name']}'s target is invalid or already dead.")
+    # Final player states
+    print("\n--- Final players ---")
+    for p in players:
+        print(p)
+    print("--- end players ---\n")
 
-                case "Monk":
-                    for p in players:
-                        p['protected'] = False
-                        if p['role'] == 'Soldier':
-                            p['protected'] = True
-
-                    # If the monk is poisoned they cannot successfully protect
-                    if player.get('poisoned'):
-                        print(f" - Monk {player['name']} is poisoned and cannot protect anyone.")
-                        continue
-
-                    target_id = action.response[0] if action.response else None
-                    target_player = get_player_by_number(players, target_id) if target_id else None
-                    if target_player and not target_player['dead']:
-                        target_player['protected'] = True
-                        print(f" - Monk {player['name']} has protected {target_player['name']}.")
-                    else:
-                        print(f" - Monk {player['name']}'s target is invalid or already dead.")
-
-                case "Fortune Teller":
-                    # Fortune Teller investigates two players and learns whether any
-                    # are evil (Imp) or the configured red herring. The result is
-                    # stored as a boolean: True if at least one target appears evil
-                    # to the Fortune Teller, False otherwise. Invalid inputs store
-                    # None to indicate no usable information was obtained.
-                    targets = action.response or []
-                    ft_player = player
-                    if len(targets) < 2:
-                        ft_player['info_for_player'] = None
-                        print(f" - Fortune Teller {player['name']} did not provide two targets.")
-                        continue
-
-                    t1 = get_player_by_number(players, targets[0])
-                    t2 = get_player_by_number(players, targets[1])
-                    if not t1 or not t2:
-                        ft_player['info_for_player'] = None
-                        print(f" - Fortune Teller {player['name']} targeted invalid player(s).")
-                        continue
-
-                    red_herring = ft_player.get('red_herring')
-                    red_hit = False
-                    if red_herring is not None:
-                        red_hit = (targets[0] == red_herring) or (targets[1] == red_herring)
-
-                    imp_hit = t1.get('role') == 'Imp' or t2.get('role') == 'Imp'
-                    info_result = imp_hit or red_hit
-
-                    if ft_player.get('poisoned'):
-                        # A poisoned Fortune Teller learns incorrect information.
-                        info_result = not info_result
-
-                    ft_player['info_for_player'] = info_result
-
-                    if info_result:
-                        print(f" - Fortune Teller {player['name']} learned at least one target is evil.")
-                    else:
-                        print(f" - Fortune Teller {player['name']} learned neither target is evil.")
-
-    return players
-
-
-def get_player_by_number(players: list, number: int) -> Optional[Dict[str, Any]]:
-    """Return the player dict whose 'id' matches number, or None if not found."""
-    for player in players:
-        if player.get("id") == number:
-            return player
-    return None
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        # Print a single clean line on Ctrl-C instead of a traceback
         print("Interrupted by user")
         sys.exit(1)
+

@@ -87,13 +87,15 @@ def test_ft_poisoned_returns_incorrect_info():
     ft = next(p for p in players if p["role"] == "Fortune Teller")
     ft["poisoned"] = True
 
-    # Fortune Teller (5) investigates players 1 (Imp) and 4, but should receive the
-    # opposite information due to being poisoned.
-    ft_action = Message(priority=4, resolved=True, response=[1, 4], playernumber=5)
+    # Fortune Teller investigates the Imp and the Villager; being poisoned
+    # should invert the returned informational reveal.
+    imp = get_player(players, "Imp")
+    villager = get_player(players, "Villager")
+    ft_action = Message(priority=4, resolved=True, response=[imp["id"], villager["id"]], playernumber=ft["id"])
 
     res = perform_night_actions(players, [ft_action])
 
-    ft_after = next(p for p in res if p["id"] == 5)
+    ft_after = get_player(res, "Fortune Teller")
     assert ft_after.get("info_for_player") is False
 
 
@@ -106,10 +108,11 @@ def test_ft_default_red_herring_is_good_player():
     red_herring_player = next(p for p in players if p["id"] == ft["red_herring"])
     assert red_herring_player["alignment"] == "Good"
 
-    # Fortune Teller (5) investigates their red herring and another good player
-    ft_action = Message(priority=4, resolved=True, response=[ft["red_herring"], 4], playernumber=5)
+    # Fortune Teller investigates their red herring and another good player
+    other_good = next(p for p in players if p["role"] == "Villager")
+    ft_action = Message(priority=4, resolved=True, response=[ft["red_herring"], other_good["id"]], playernumber=ft["id"])
 
     res = perform_night_actions(players, [ft_action])
 
-    ft_after = next(p for p in res if p["id"] == 5)
+    ft_after = get_player(res, "Fortune Teller")
     assert ft_after.get("info_for_player") is True

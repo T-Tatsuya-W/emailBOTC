@@ -69,6 +69,8 @@ class MessageHandler:
         messages: List[Message],
         poll_every: Optional[int] = 5,
         poll_for: Optional[int] = 60,
+        *,
+        stop_on_nomination: bool = False,
     ) -> int:
         """Sends all messages and monitors for responses until resolved.
 
@@ -153,6 +155,11 @@ class MessageHandler:
                                 and (msg.canChooseSelf or all(n != msg.playernumber for n in response_ints))
                             ):
                                 msg.resolved = True
+                                # record the time this valid response was accepted
+                                try:
+                                    msg._response_time = time.time()
+                                except Exception:
+                                    pass
                                 print(f"accepted response from {msg.playerName}")
 
                             else:
@@ -160,13 +167,65 @@ class MessageHandler:
                                 # send message again.
                                 self.email_handler.send_email(msg.address, msg.subject, msg.body+"\n Your previous response was invalid. Please try again.")
                         else:
-                            # No expected responses, just mark as resolved
-                            msg.resolved = True
-                            msg.responseBody = clean_body
-                            print(f"accepted response from {msg.playerName}")
+                            # No expected responses: accept optionally provided integers.
+                            # However, if the message was sent to a dead player, do not
+                            # treat any integers they send as nominations — mark resolved
+                            # but clear responses.
+                            if getattr(msg, "is_dead", False):
+                                msg.response = []
+                                msg.responseBody = clean_body
+                                msg.resolved = True
+                                print(f"ignored response from dead player {msg.playerName}")
+                            else:
+                                response_ints = []
+                                try:
+                                    response_ints = self.email_handler.extract_ints_from_body(clean_body) or []
+                                except Exception:
+                                    response_ints = []
+
+                                # Keep only integers within the allowed id range
+                                valid_ints = [n for n in response_ints if isinstance(n, int) and 0 < n <= self.max_player_id]
+
+                                # If the handler was given an allowed_nomination_ids set, use
+                                # it to filter valid ints to only alive players.
+                                allowed_set = getattr(self, "allowed_nomination_ids", None)
+                                if allowed_set is not None:
+                                    allowed_ints = [n for n in valid_ints if n in allowed_set]
+                                else:
+                                    allowed_ints = valid_ints
+
+                                if valid_ints and not allowed_ints:
+                                    # The player provided integers, but none referred to
+                                    # currently-allowed (alive) players. Reject and ask
+                                    # them to try again.
+                                    print(f"rejecting invalid nomination from {msg.playerName}; asking to retry")
+                                    self.email_handler.send_email(msg.address, msg.subject, msg.body + "\n Your previous response was invalid. Please try again.")
+                                    # do not mark resolved so we continue waiting
+                                else:
+                                    # Accept either no integers or a set of allowed ints
+                                    msg.response = allowed_ints
+                                    msg.responseBody = clean_body
+                                    msg.resolved = True
+                                    # record the time this optional response was accepted
+                                    try:
+                                        msg._response_time = time.time()
+                                    except Exception:
+                                        pass
+                                    print(f"accepted response from {msg.playerName}")
                 unresolved_messages = [
                     msg for msg in messages if not msg.resolved
                 ]
+
+                # If requested, return early as soon as any optional integer
+                # nomination is received in any message's response list — but
+                # ignore responses from dead players.
+                if stop_on_nomination:
+                    for m in messages:
+                        if getattr(m, "response", None) and not getattr(m, "is_dead", False):
+                            # check that at least one of the integers is a valid player id
+                            if any(isinstance(n, int) and 0 < n <= self.max_player_id for n in m.response):
+                                print("Nomination detected; returning early from message handler.")
+                                return messages
 
                 print(f"Waiting for {len(unresolved_messages)} message(s)", end="", flush=True)
 
