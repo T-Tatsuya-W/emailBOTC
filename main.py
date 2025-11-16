@@ -10,7 +10,7 @@ import sys
 from typing import Optional, Sequence, Tuple
 
 from utils.player_factory import make_players, setup_players
-from utils.nightphase import nightphase, perform_night_actions, get_player_by_number
+from utils.nightphase import nightphase, perform_night_actions, get_player_by_number, first_nightphase
 from utils.dayphase import dayphase
 
 # Re-export helpers for older imports/tests that expect them on `main`.
@@ -113,12 +113,15 @@ def main() -> None:
     round_num = 1
     while True:
         print(f"\n=== Night {round_num} ===")
-        players = nightphase(players)
+        if round_num == 1:
+            players = first_nightphase(players)
+        else:
+            players = nightphase(players, night_number=round_num)
 
         # Run day phase (currently a mock that prints player states)
         print(f"\n=== Day {round_num} ===")
         # Run dayphase and wait longer for player acknowledgements/nominations
-        players = dayphase(players)
+        players = dayphase(players, day_number=round_num)
 
         # Check win state: if exactly 2 players are alive and one is the Imp,
         # Evil wins. Print a terminal message and end the game.

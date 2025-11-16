@@ -28,8 +28,7 @@ def test_max_distinct_good_roles():
         if distinct_good > max_distinct:
             max_distinct = distinct_good
 
-    # Current behaviour: canonical roster provides 4 Good roles
-    # (Monk, Soldier, Fortune Teller, Villager) and the small-roster
-    # reassignment picks 3 extra special goods plus Villagers, so the
-    # maximum distinct Good-role types that can appear concurrently is 4.
-    assert max_distinct == 4
+    # Current behaviour: canonical roster provides 5 Good roles
+    # (Monk, Soldier, Fortune Teller, Investigator, Villager) and the
+    # reassignment logic may expose all of these concurrently.
+    assert max_distinct == 5

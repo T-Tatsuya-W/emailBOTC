@@ -59,6 +59,9 @@ def make_players(names: Optional[List[str]] = None, emails: Optional[List[str]] 
             "nightResponse": night_responses[idx],
             "canChooseSelf": can_choose_self[idx],
             "nightActionPriority": night_priorities[idx],
+            # first-night behaviour flags (defaults)
+            "first_night_only": False,
+            "skip_first_night": False,
         }
 
         # default extra fields used by tests
@@ -72,6 +75,12 @@ def make_players(names: Optional[List[str]] = None, emails: Optional[List[str]] 
 
             player["red_herring"] = red_herring_id
             player["info_for_player"] = None
+
+        # Role-specific first-night rules: Imp and Monk do not act on the first night
+        if player["role"] == "Imp":
+            player["skip_first_night"] = True
+        if player["role"] == "Monk":
+            player["skip_first_night"] = True
 
         players.append(player)
 
@@ -158,7 +167,8 @@ def setup_players(
                 "protected": False,
                 "nightResponse": 0,
                 "canChooseSelf": False,
-                "nightActionPriority": 4,
+                    "nightActionPriority": 4,
+                    "_is_extra": True,
             }
             base_players.append(player)
     elif len(contacts) < len(base_players):
@@ -174,6 +184,24 @@ def setup_players(
     for idx, player in enumerate(base_players, start=1):
         player["id"] = idx
 
+    # If the caller requested the canonical roster size (six players) make
+    # sure the live-game roster prefers the Investigator role rather than
+    # leaving an unused Villager slot. We do this only for the `setup_players`
+    # runtime path so unit tests that call `make_players()` directly keep
+    # the previous canonical data structure.
+    canonical_count = len(make_players())
+    if len(contacts) == canonical_count:
+        # Find the first Villager and replace with Investigator for play.
+        for player in base_players:
+            if player.get("role") == "Villager":
+                player["role"] = "Investigator"
+                player["alignment"] = "Good"
+                player["nightResponse"] = 0
+                player["nightActionPriority"] = 4
+                player["canChooseSelf"] = False
+                player["first_night_only"] = True
+                break
+
     # If the caller did not request the canonical roster size, apply a
     # simplified role assignment:
     # - exactly one Imp
@@ -182,59 +210,93 @@ def setup_players(
     # - remaining players become Villagers
     canonical_count = len(make_players())
     if len(contacts) != canonical_count:
-        # pick two distinct players for Imp and Poisoner
-        indices = list(range(len(base_players)))
-        rng.shuffle(indices)
-        imp_idx = indices[0]
-        poisoner_idx = indices[1] if len(indices) > 1 else None
+        # pick two distinct players for Imp and Poisoner, but only within
+        # the first `canonical_count` slots so any extra players remain
+        # Villagers. This ensures extra contacts beyond the canonical roster
+        # size are kept as Villagers.
+        # Determine which positions correspond to original canonical slots
+        # (extra appended players are flagged with `_is_extra`). We want to
+        # ensure special-role assignment only applies to the original roster
+        # so extras remain Villagers even after shuffling.
+        assignable_positions = [i for i, p in enumerate(base_players) if not p.get("_is_extra", False)]
+        if not assignable_positions:
+            assignable_positions = list(range(min(len(base_players), canonical_count)))
+        rng.shuffle(assignable_positions)
+        imp_idx = assignable_positions[0]
+        poisoner_idx = assignable_positions[1] if len(assignable_positions) > 1 else None
 
         # Pool of candidate Good roles (some may be placeholders)
-        #         good_roles_pool = ["Washerwoman", "Investigator", "Empath", "Fortune Teller", "Undertaker", "Monk", "Ravenskeeper", "Virgin", "Slayer", "Soldier", "Mayor"]
-        good_roles_pool = ["Fortune Teller", "Monk", "Soldier"]
+        # We will assign as many distinct roles from this pool as possible
+        # (one of each). Only if there are more players than roles will the
+        # remaining players become Villagers.
+        good_roles_pool = ["Fortune Teller", "Monk", "Soldier", "Investigator"]
         rng.shuffle(good_roles_pool)
-        selected_good_roles = good_roles_pool[:3]
 
-        # pick indices for the 3 good roles (distinct from imp/poisoner)
-        remaining_indices = [i for i in indices if i not in (imp_idx, poisoner_idx)]
-        rng.shuffle(remaining_indices)
-        good_role_indices = remaining_indices[: len(selected_good_roles)]
+        # Prepare an iterator over the shuffled good roles; we'll consume one
+        # role per non-Imp/non-Poisoner player until the pool is exhausted.
+        role_iter = iter(good_roles_pool)
 
         for i, player in enumerate(base_players):
-            # assign Imp and Poisoner
+            # assign Imp and Poisoner (only within assignable positions)
             if i == imp_idx:
                 player["role"] = "Imp"
                 player["alignment"] = "Evil"
                 player["nightResponse"] = 1
                 player["nightActionPriority"] = 3
                 player["canChooseSelf"] = True
+                player.setdefault("first_night_only", False)
+                player["skip_first_night"] = True
             elif i == poisoner_idx:
                 player["role"] = "Poisoner"
                 player["alignment"] = "Evil"
                 player["nightResponse"] = 1
                 player["nightActionPriority"] = 1
                 player["canChooseSelf"] = False
-            elif i in good_role_indices:
-                # assign one of the selected good roles
-                role = selected_good_roles[good_role_indices.index(i)]
+                player.setdefault("first_night_only", False)
+                player.setdefault("skip_first_night", False)
+            else:
+                # If this slot is NOT one of the assignable positions, treat
+                # it as an extra player and make it a Villager. Otherwise
+                # consume the next distinct good role from the pool.
+                if i not in assignable_positions:
+                    role = "Villager"
+                else:
+                    try:
+                        role = next(role_iter)
+                    except StopIteration:
+                        role = "Villager"
+
                 player["role"] = role
                 player["alignment"] = "Good"
+
                 # Soldier does not require a numeric response; Monk expects 1,
-                # Fortune Teller expects 2. Other placeholder goods expect 0.
+                # Fortune Teller expects 2. Investigator expects 0.
                 if role == "Fortune Teller":
                     player["nightResponse"] = 2
                 elif role == "Monk":
                     player["nightResponse"] = 1
+                elif role == "Investigator":
+                    player["nightResponse"] = 0
                 else:
                     player["nightResponse"] = 0
+
                 # set priority: Monk(2), FT(4), Soldier(4), placeholders default to 4
-                player["nightActionPriority"] = 2 if role == "Monk" else (4)
+                player["nightActionPriority"] = 2 if role == "Monk" else 4
                 player["canChooseSelf"] = True if role == "Soldier" else False
-            else:
-                player["role"] = "Villager"
-                player["alignment"] = "Good"
-                player["nightResponse"] = 0
-                player["nightActionPriority"] = 4
-                player["canChooseSelf"] = False
+
+                # Investigator only acts on the first night
+                if role == "Investigator":
+                    player["first_night_only"] = True
+
+                # Monk does not act on the first night in our ruleset
+                if role == "Monk":
+                    player["skip_first_night"] = True
+                else:
+                    player.setdefault("skip_first_night", False)
+
+            # Ensure default first-night flags exist for other role paths
+            player.setdefault("first_night_only", False)
+            player.setdefault("skip_first_night", False)
 
             # role-specific defaults
             if player["role"] == "Soldier":

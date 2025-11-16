@@ -9,7 +9,7 @@ from utils.email_handler import EmailHandler
 from utils.settings import DEFAULT_POLL_EVERY, DEFAULT_POLL_FOR
 
 
-def get_day_nominations_first(players: List[Dict[str, Any]]) -> List[Message]:
+def get_day_nominations_first(players: List[Dict[str, Any]], *, day_number: int = 1) -> List[Message]:
     """Construct message templates for the day-phase nominations step.
 
     This returns a list of `Message` objects suitable for use with
@@ -23,36 +23,75 @@ def get_day_nominations_first(players: List[Dict[str, Any]]) -> List[Message]:
 
     messages: List[Message] = []
     for player in players:
-        subject = f"Day Phase Nominations {player['name']}"
-        # All players receive the prompt but dead players are informed
-        # and are not expected to reply. Alive players may optionally
-        # nominate by replying with a single integer.
+        subject = f"day {day_number} nominations {player.get('name')} [{player.get('id')} ]"
+
+        # Start with a public announcement about the previous night so the
+        # players immediately see whether anyone died during the night.
+        night_announce = player.get("last_night_announcement")
+        if not night_announce:
+            night_announce = "No player has died."
+
+        # Build the list of players (alive/dead) after the announcement
+        body_top = night_announce + "\n\nCurrent players:\n" + player_states
+
+        # If this player learned information during the previous night, include
+        # that info *before* the action prompt so the player sees it first.
+        info_text = None
+        if "info_for_player" in player and player.get("info_for_player") is not None:
+            info_val = player.get("info_for_player")
+            info_text = None
+            # Support string messages (Investigator) first
+            if isinstance(info_val, str):
+                info_text = info_val
+            elif isinstance(info_val, bool):
+                # If we have metadata about what was attempted, include
+                # that in the summary (e.g. "You tried to investigate
+                # players X and Y, and learned that neither is evil").
+                action = player.get("info_action")
+                targets = player.get("info_targets") or []
+                if action and targets:
+                    # Build a readable target list with ids and names
+                    pairs = []
+                    for tid in targets:
+                        t = next((pp for pp in players if pp.get("id") == tid), None)
+                        if t:
+                            pairs.append(f"{tid} ({t.get('name')})")
+                        else:
+                            pairs.append(str(tid))
+
+                    if len(pairs) == 1:
+                        tried = f"You tried to {action} player {pairs[0]}"
+                    else:
+                        tried = f"You tried to {action} players {pairs[0]} and {pairs[1]}"
+
+                    if info_val is True:
+                        info_text = f"{tried}, and learned that one of them is the demon."
+                    else:
+                        info_text = f"{tried}, and learned that neither is the demon."
+                else:
+                    # Fallback short messages
+                    if info_val is True:
+                        info_text = "You learned that at least one of your targets is evil."
+                    else:
+                        info_text = "You learned that neither of your targets is evil."
+
+        # Compose the rest of the body depending on alive/dead status
         if player.get("dead"):
             body = (
-                f"Hello {player['name']},\nIt's day time! current players:\n{player_states}\n"
+                f"Hello {player['name']},\n" + body_top + "\n"
                 "You are dead — no nomination available. \nReply to this email to acknowledge.\n"
             )
             expected = 0
         else:
-            body = (
-                f"Hello {player['name']},\nIt's day time! current players:\n{player_states}\n"
+            # Place any informative line before the action prompt
+            prompt = (
                 "To nominate a player reply with a single integer (player id). \nIf you do not wish to nominate, reply without a number to acknowledge.\n"
             )
-            expected = 0
-
-        # If this player learned information during the previous night, include it
-        # in the daytime nomination message so they see their investigative result.
-        if "info_for_player" in player and player.get("info_for_player") is not None:
-            info_val = player.get("info_for_player")
-            if info_val is True:
-                info_text = "You learned that at least one of your targets is evil."
-            elif info_val is False:
-                info_text = "You learned that neither of your targets is evil."
-            else:
-                info_text = None
-
             if info_text:
-                body += "\n\nNight information: " + info_text
+                body = f"Hello {player['name']},\n" + body_top + "\n\nNight information: " + info_text + "\n\n" + prompt
+            else:
+                body = f"Hello {player['name']},\n" + body_top + "\n" + prompt
+            expected = 0
 
         msg = Message(
             priority=4,
@@ -67,6 +106,10 @@ def get_day_nominations_first(players: List[Dict[str, Any]]) -> List[Message]:
             playerName=player.get("name", ""),
             canChooseSelf=True,
         )
+        # Mark messages from the nomination step so the message handler
+        # can treat them specially (e.g. return early when a nomination
+        # integer is received).
+        msg.is_nomination = True
         # mark if the player is dead so handlers can ignore invalid noms
         msg.is_dead = bool(player.get("dead", False))
         messages.append(msg)
@@ -119,6 +162,8 @@ def get_day_nominations_actions(
     email_handler: Optional[EmailHandler] = None,
     poll_every: Optional[int] = None,
     poll_for: Optional[int] = None,
+    *,
+    day_number: int = 1,
 ) -> List[Message]:
     """Construct, send and resolve day-phase nomination messages.
 
@@ -126,7 +171,7 @@ def get_day_nominations_actions(
     nomination-specific; voting logic can be implemented in a separate
     function later.
     """
-    messages = get_day_nominations_first(players)
+    messages = get_day_nominations_first(players, day_number=day_number)
     if email_handler is None:
         email_handler = EmailHandler()
 
@@ -163,6 +208,8 @@ def dayphase(
     email_handler: Optional[EmailHandler] = None,
     poll_every: Optional[int] = None,
     poll_for: Optional[int] = None,
+    *,
+    day_number: int = 1,
 ) -> List[Dict[str, Any]]:
     """Run the day phase: solicit optional nominations and print the result.
 
@@ -208,7 +255,7 @@ def dayphase(
         round_messages: List[Message] = []
         for player in round_players:
             # Build the same daytime message as the template function
-            subject = f"Day Phase Nominations {player['name']}"
+            subject = f"day {day_number} nominations {player['name']} [{player.get('id')} ]"
             body = (
                 f"Hello {player['name']},\nIt's day time! current players:\n"
                 + "".join(f"- {p['id']}: {p['name']} (is {'dead' if p['dead'] else 'alive'})\n" for p in players)
@@ -216,12 +263,37 @@ def dayphase(
             )
             if "info_for_player" in player and player.get("info_for_player") is not None:
                 info_val = player.get("info_for_player")
-                if info_val is True:
-                    info_text = "You learned that at least one of your targets is evil."
-                elif info_val is False:
-                    info_text = "You learned that neither of your targets is evil."
-                else:
-                    info_text = None
+                info_text = None
+                # Support string messages (Investigator) first
+                if isinstance(info_val, str):
+                    info_text = info_val
+                elif isinstance(info_val, bool):
+                    action = player.get("info_action")
+                    targets = player.get("info_targets") or []
+                    if action and targets:
+                        pairs = []
+                        for tid in targets:
+                            t = next((pp for pp in players if pp.get("id") == tid), None)
+                            if t:
+                                pairs.append(f"{tid} ({t.get('name')})")
+                            else:
+                                pairs.append(str(tid))
+
+                        if len(pairs) == 1:
+                            tried = f"You tried to {action} player {pairs[0]}"
+                        else:
+                            tried = f"You tried to {action} players {pairs[0]} and {pairs[1]}"
+
+                        if info_val is True:
+                            info_text = f"{tried}, and learned that at least one is evil."
+                        else:
+                            info_text = f"{tried}, and learned that neither is evil."
+                    else:
+                        if info_val is True:
+                            info_text = "You learned that at least one of your targets is evil."
+                        else:
+                            info_text = "You learned that neither of your targets is evil."
+
                 if info_text:
                     body += "\n\nNight information: " + info_text
 
@@ -238,6 +310,9 @@ def dayphase(
                 playerName=player.get("name", ""),
                 canChooseSelf=True,
             )
+            # Mark this round's message as a nomination prompt so the
+            # MessageHandler can detect a nomination and return early.
+            msg.is_nomination = True
             msg.is_dead = bool(player.get("dead", False))
             round_messages.append(msg)
 
@@ -271,13 +346,22 @@ def dayphase(
 
         # Conduct voting on the nominated player (use remaining time)
         remaining_after_nom = max(0.0, end_time - time.time())
-        votes = get_day_voting(players, nomination, message_handler=message_handler, email_handler=email_handler, poll_every=poll_every, poll_for=remaining_after_nom)
+        votes = get_day_voting(
+            players,
+            nomination,
+            message_handler=message_handler,
+            email_handler=email_handler,
+            poll_every=poll_every,
+            poll_for=remaining_after_nom,
+            leading_nom=leading_nom,
+            threshold=threshold,
+        )
 
         # Tally yes votes for this round
         yes_count = 0
         for vote in votes:
             v = (vote or "").casefold()
-            if re.search(r"\b(yes|y|aye|yea|approve|accept)\b", v, flags=re.IGNORECASE):
+            if re.search(r"\b(yes|yeah|ye|y|aye|yea|approve|accept)\b", v, flags=re.IGNORECASE):
                 yes_count += 1
 
         print(f"Round yes votes: {yes_count}")
@@ -332,6 +416,9 @@ def get_day_voting(
     email_handler: Optional[EmailHandler] = None,
     poll_every: Optional[int] = None,
     poll_for: Optional[int] = None,
+    *,
+    leading_nom: Optional[Dict[str, Any]] = None,
+    threshold: Optional[int] = None,
 ) -> List[Optional[str]]:
     """Announce the nomination and collect votes from all players.
 
@@ -359,6 +446,26 @@ def get_day_voting(
                 f"Hello {player.get('name')},\nA nomination has been made for {nominated_name} (player {nominated_id}).\n"
                 "Please reply with 'YES' to vote in favour, 'NO' to vote against, or 'ABS' to abstain."
             )
+
+            # If there is a current leading nomination from earlier rounds,
+            # inform voters which player is currently set to be lynched and how
+            # many yes votes are required to match or beat them.
+            if leading_nom and threshold is not None:
+                try:
+                    lead_id = leading_nom.get("id")
+                    lead_yes = int(leading_nom.get("yes", 0))
+                    lead_player = next((p for p in players if p.get("id") == lead_id), None)
+                    lead_name = lead_player.get("name") if lead_player else str(lead_id)
+                    # To match the current leading nominee a challenger needs
+                    # `lead_yes` yes votes; to beat them they need `lead_yes + 1`.
+                    body += (
+                        f"\n\nCurrent leading nominee: {lead_name} (player {lead_id}) with {lead_yes} yes votes. "
+                        f"To match them this nomination needs {lead_yes} yes votes; to beat them it needs {lead_yes + 1} yes votes.\n"
+                    )
+                except Exception:
+                    # Defensive: ignore formatting errors and fall back to
+                    # the simple message body.
+                    pass
 
             msg = Message(
                 priority=4,

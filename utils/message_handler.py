@@ -232,6 +232,12 @@ class MessageHandler:
                 # ignore responses from dead players.
                 if stop_on_nomination:
                     for m in messages:
+                        # Only consider messages that were explicitly created
+                        # as nomination prompts. This avoids treating arbitrary
+                        # resolved messages (e.g. votes with free-text 'no') as
+                        # nominations when the caller requested an early return.
+                        if not getattr(m, "is_nomination", False):
+                            continue
                         if getattr(m, "response", None) and not getattr(m, "is_dead", False):
                             # check that at least one of the integers is a valid player id
                             if any(isinstance(n, int) and 0 < n <= self.max_player_id for n in m.response):
