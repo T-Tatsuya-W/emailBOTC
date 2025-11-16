@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 from .settings import DEFAULT_POLL_EVERY, DEFAULT_POLL_FOR
 import time
+import uuid
 import re
 
 
@@ -84,8 +85,13 @@ class MessageHandler:
         print("\nSending emails to all players...", end="")
         # Send all messages
         for message in messages:
-            # Add unique code to end of subject to help match replies
-            message.subject += f" [ID: {id(message)}]"
+            # Add a stronger unique code to the end of subject to help match replies.
+            # Use a timestamp and short UUID so tokens are highly unlikely to collide
+            # across sessions or process restarts. Only append if a token isn't
+            # already present so repeated sends don't keep growing the subject.
+            if not re.search(r"\[ID: [^\]]+\]$", message.subject):
+                token = f"{int(time.time()*1000)}-{uuid.uuid4().hex[:8]}"
+                message.subject += f" [ID: {token}]"
 
             self.email_handler.send_email(
                 to_address=message.address,

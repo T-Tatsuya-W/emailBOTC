@@ -103,7 +103,7 @@ def test_send_and_resolve_all_happy_path(mock_eh, sample_messages):
             "id": "1",
             "uid": 1,
             "from": "p1@example.com",
-            "subject": sample_messages[0].subject + f" [ID: {id(sample_messages[0])}]",
+            "subject": sample_messages[0].subject,
             "clean_body": "2",
         }
     )
@@ -112,7 +112,7 @@ def test_send_and_resolve_all_happy_path(mock_eh, sample_messages):
             "id": "2",
             "uid": 2,
             "from": "p2@example.com",
-            "subject": sample_messages[1].subject + f" [ID: {id(sample_messages[1])}]",
+            "subject": sample_messages[1].subject,
             "clean_body": "1",
         }
     )

@@ -8,7 +8,7 @@ Note: callers may override these by passing explicit values to
 """
 
 # Seconds between polling attempts
-DEFAULT_POLL_EVERY = 1
+DEFAULT_POLL_EVERY = 5
 
 # Total seconds to poll before giving up
-DEFAULT_POLL_FOR = 1000
+DEFAULT_POLL_FOR = 60 * 5

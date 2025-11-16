@@ -73,7 +73,7 @@ def test_dayphase_with_nomination():
             "id": "1",
             "uid": 1,
             "from": messages[0].address,
-            "subject": messages[0].subject + f" [ID: {id(messages[0])}]",
+            "subject": messages[0].subject,
             "clean_body": "3",
         }
     )
