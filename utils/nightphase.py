@@ -4,6 +4,7 @@ from typing import Optional, Dict, Any, List
 
 from utils.email_handler import EmailHandler
 from utils.message_handler import Message, MessageHandler
+from utils.settings import DEFAULT_POLL_EVERY, DEFAULT_POLL_FOR
 
 
 def nightphase(
@@ -34,8 +35,8 @@ def get_night_actions(
     players: list,
     message_handler: Optional[MessageHandler] = None,
     email_handler: Optional[EmailHandler] = None,
-    poll_every: int = 1,
-    poll_for: int = 1000,
+    poll_every: Optional[int] = None,
+    poll_for: Optional[int] = None,
 ) -> List[Message]:
     """Construct night prompts, send them and collect resolved actions."""
 
@@ -69,6 +70,12 @@ def get_night_actions(
                 )
         expected = 0 if player.get("dead") else player.get("nightResponse", 0)
 
+        # If there is a day announcement (e.g. lynch result) include it in the
+        # night-time email so players are informed of what happened today.
+        last_day = player.get("last_day_announcement")
+        if last_day:
+            body = last_day + "\n\n" + body
+
         message = Message(
             priority=player['nightActionPriority'],
             address=player['email'],
@@ -92,6 +99,10 @@ def get_night_actions(
     else:
         message_handler.messages = messages
         message_handler.max_player_id = len(players)
+
+    # Use provided polling values or fall back to shared defaults
+    poll_every = poll_every if poll_every is not None else DEFAULT_POLL_EVERY
+    poll_for = poll_for if poll_for is not None else DEFAULT_POLL_FOR
 
     responses = message_handler.send_and_resolve_all(messages, poll_every=poll_every, poll_for=poll_for)
     return responses

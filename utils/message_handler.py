@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import List, Optional
+from .settings import DEFAULT_POLL_EVERY, DEFAULT_POLL_FOR
 import time
 import re
 
@@ -67,8 +68,8 @@ class MessageHandler:
     def send_and_resolve_all(
         self,
         messages: List[Message],
-        poll_every: Optional[int] = 5,
-        poll_for: Optional[int] = 60,
+        poll_every: Optional[int] = None,
+        poll_for: Optional[int] = None,
         *,
         stop_on_nomination: bool = False,
     ) -> int:
@@ -106,6 +107,10 @@ class MessageHandler:
         ]
         print(f"Waiting for {len(unresolved_messages)} message(s)", end="", flush=True)
 
+
+        # Use the provided values or fall back to module-level defaults
+        poll_every = poll_every if poll_every is not None else DEFAULT_POLL_EVERY
+        poll_for = poll_for if poll_for is not None else DEFAULT_POLL_FOR
 
         start_time = time.time()
         while time.time() - start_time < poll_for:
