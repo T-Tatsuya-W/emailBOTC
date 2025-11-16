@@ -118,7 +118,7 @@ def main() -> None:
         # Run day phase (currently a mock that prints player states)
         print(f"\n=== Day {round_num} ===")
         # Run dayphase and wait longer for player acknowledgements/nominations
-        players = dayphase(players, poll_every=2, poll_for=300)
+        players = dayphase(players)
 
         # Check win state: if exactly 2 players are alive and one is the Imp,
         # Evil wins. Print a terminal message and end the game.
