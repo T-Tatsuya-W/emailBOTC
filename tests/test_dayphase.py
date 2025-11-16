@@ -35,8 +35,9 @@ def make_sample_players(n=5):
 
 
 def test_dayphase_returns_players_list():
+    mock_eh = MockEmailHandler()
     players = make_sample_players(6)
-    out = dayphase(players)
+    out = dayphase(players, email_handler=mock_eh, poll_every=0.01, poll_for=0.01)
     assert isinstance(out, list)
     assert len(out) == len(players)
     assert {p["id"] for p in out} == {p["id"] for p in players}

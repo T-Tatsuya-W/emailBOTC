@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from typing import List, Dict, Any, Optional
 import re
+import time
 
 from utils.message_handler import Message, MessageHandler
 from utils.email_handler import EmailHandler
+from utils.settings import DEFAULT_POLL_EVERY, DEFAULT_POLL_FOR
 
 
 def get_day_nominations_first(players: List[Dict[str, Any]]) -> List[Message]:
@@ -115,8 +117,8 @@ def get_day_nominations_actions(
     players: List[Dict[str, Any]],
     message_handler: Optional[MessageHandler] = None,
     email_handler: Optional[EmailHandler] = None,
-    poll_every: int = 1,
-    poll_for: int = 1,
+    poll_every: Optional[int] = None,
+    poll_for: Optional[int] = None,
 ) -> List[Message]:
     """Construct, send and resolve day-phase nomination messages.
 
@@ -142,6 +144,10 @@ def get_day_nominations_actions(
 
     # Stop as soon as any nomination is received (an optional integer in a
     # zero-expected message) or until all messages are resolved with no noms.
+    # Use provided polling values or fall back to shared defaults
+    poll_every = poll_every if poll_every is not None else DEFAULT_POLL_EVERY
+    poll_for = poll_for if poll_for is not None else DEFAULT_POLL_FOR
+
     responses = message_handler.send_and_resolve_all(
         messages, poll_every=poll_every, poll_for=poll_for, stop_on_nomination=True
     )
@@ -155,65 +161,159 @@ def dayphase(
     players: List[Dict[str, Any]],
     message_handler: Optional[MessageHandler] = None,
     email_handler: Optional[EmailHandler] = None,
-    poll_every: int = 1,
-    poll_for: int = 1,
+    poll_every: Optional[int] = None,
+    poll_for: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Run the day phase: solicit optional nominations and print the result.
 
     Returns the (possibly modified) players list.
     """
     print("Starting day phase. Collecting nominations...")
-    responses = get_day_nominations_actions(players, message_handler=message_handler, email_handler=email_handler, poll_every=poll_every, poll_for=poll_for)
+    # Use provided polling values or fall back to shared defaults
+    poll_every = poll_every if poll_every is not None else DEFAULT_POLL_EVERY
+    poll_for = poll_for if poll_for is not None else DEFAULT_POLL_FOR
 
-    nomination = select_nomination_from_messages(responses, players)
+    # We'll allow multiple nomination->voting rounds within the day window.
+    # Track which players have already nominated this day so they cannot
+    # nominate again in subsequent rounds.
+    start_time = time.time()
+    end_time = start_time + poll_for
+
+    has_nominated = set()
+    leading_nom = None  # dict with keys 'id' and 'yes'
+    tie = False
+
+    # Precompute majority threshold (alive players at start of day)
+    alive_count = sum(1 for p in players if not p.get("dead"))
+    threshold = (alive_count + 1) // 2
+
+    # Reuse the provided message_handler/email_handler or create defaults
+    if email_handler is None:
+        email_handler = EmailHandler()
+    if message_handler is None:
+        # We'll create per-round MessageHandler instances as needed
+        message_handler = MessageHandler(email_handler, [], max_player_id=len(players))
+
     announcement_text = None
-    if nomination is None:
-        print("No nomination was made this day.")
-        announcement_text = "No nomination was made today."
-    else:
+
+    # Loop until time runs out or all alive players have nominated
+    while time.time() < end_time and len(has_nominated) < alive_count:
+        remaining = max(0.0, end_time - time.time())
+
+        # Build messages for players who haven't nominated and are alive
+        round_players = [p for p in players if not p.get("dead") and p.get("id") not in has_nominated]
+        if not round_players:
+            break
+
+        round_messages: List[Message] = []
+        for player in round_players:
+            # Build the same daytime message as the template function
+            subject = f"Day Phase Nominations {player['name']}"
+            body = (
+                f"Hello {player['name']},\nIt's day time! current players:\n"
+                + "".join(f"- {p['id']}: {p['name']} (is {'dead' if p['dead'] else 'alive'})\n" for p in players)
+                + "\nTo nominate a player reply with a single integer (player id). \nIf you do not wish to nominate, reply without a number to acknowledge.\n"
+            )
+            if "info_for_player" in player and player.get("info_for_player") is not None:
+                info_val = player.get("info_for_player")
+                if info_val is True:
+                    info_text = "You learned that at least one of your targets is evil."
+                elif info_val is False:
+                    info_text = "You learned that neither of your targets is evil."
+                else:
+                    info_text = None
+                if info_text:
+                    body += "\n\nNight information: " + info_text
+
+            msg = Message(
+                priority=4,
+                address=player.get("email") or "",
+                subject=subject,
+                body=body,
+                resolved=False,
+                response=[],
+                playernumber=player.get("id", 0),
+                responseBody="",
+                expected_response_number=0,
+                playerName=player.get("name", ""),
+                canChooseSelf=True,
+            )
+            msg.is_dead = bool(player.get("dead", False))
+            round_messages.append(msg)
+
+        # Use a fresh MessageHandler for the round to avoid mixing state
+        round_mh = MessageHandler(email_handler, round_messages, max_player_id=len(players))
+        round_mh.allowed_nomination_ids = {p.get("id") for p in players if not p.get("dead")}
+
+        # Ask for nominations and stop when a nomination is received or timeout
+        round_responses = round_mh.send_and_resolve_all(round_messages, poll_every=poll_every, poll_for=remaining, stop_on_nomination=True)
+
+        # Check if a nomination was made this round
+        nomination = select_nomination_from_messages(round_responses, players)
+        if nomination is None:
+            # no nomination this round; continue to remaining time
+            continue
+
         print(f"Nomination received: player {nomination}")
 
-        # Conduct voting on the nominated player
-        votes = get_day_voting(players, nomination, message_handler=message_handler, email_handler=email_handler, poll_every=poll_every, poll_for=poll_for)
-        # Tally votes
-        tally = {"yes": 0, "no": 0, "abstain": 0, "no_response": 0}
+        # Identify which player made the nomination (the message whose response contains it)
+        nominator_id = None
+        for m in round_responses:
+            for n in getattr(m, "response", []) or []:
+                if isinstance(n, int) and n == nomination:
+                    nominator_id = m.playernumber
+                    break
+            if nominator_id is not None:
+                break
+
+        if nominator_id is not None:
+            has_nominated.add(nominator_id)
+
+        # Conduct voting on the nominated player (use remaining time)
+        remaining_after_nom = max(0.0, end_time - time.time())
+        votes = get_day_voting(players, nomination, message_handler=message_handler, email_handler=email_handler, poll_every=poll_every, poll_for=remaining_after_nom)
+
+        # Tally yes votes for this round
+        yes_count = 0
         for vote in votes:
             v = (vote or "").casefold()
-            if re.search(r"\b(abs|abstain|abstention)\b", v, flags=re.IGNORECASE):
-                tally["abstain"] += 1
-            elif re.search(r"\b(yes|y|aye|yea|approve|accept)\b", v, flags=re.IGNORECASE):
-                tally["yes"] += 1
-            elif re.search(r"\b(no|n|nay|reject|deny)\b", v, flags=re.IGNORECASE):
-                tally["no"] += 1
-            elif v.strip() == "":
-                tally["no_response"] += 1
-            else:
-                # Unrecognised responses count as abstain
-                tally["abstain"] += 1
+            if re.search(r"\b(yes|y|aye|yea|approve|accept)\b", v, flags=re.IGNORECASE):
+                yes_count += 1
 
-        print("Voting results:")
-        print(f" - Yes: {tally['yes']}")
-        print(f" - No: {tally['no']}")
-        print(f" - Abstain: {tally['abstain']}")
-        print(f" - No response: {tally['no_response']}")
+        print(f"Round yes votes: {yes_count}")
 
-        # Determine majority threshold among alive players. A nomination is
-        # executed (player is killed) if number of 'yes' votes is >= ceil(alive/2).
-        alive_count = sum(1 for p in players if not p.get("dead"))
-        # majority threshold (round up)
-        threshold = (alive_count + 1) // 2
-        if tally["yes"] >= threshold:
-            target = next((p for p in players if p.get("id") == nomination), None)
-            if target and not target.get("dead"):
-                target["dead"] = True
-                print(f"Nomination passed: player {nomination} ({target.get('name')}) has been lynched by vote.")
-                announcement_text = f"Player {nomination} ({target.get('name')}) was lynched by vote."
+        # Only nominations that reach the majority threshold are eligible to be leading
+        if yes_count >= threshold:
+            if leading_nom is None:
+                leading_nom = {"id": nomination, "yes": yes_count}
+                tie = False
             else:
-                print("Nomination passed but target invalid or already dead.")
-                announcement_text = "Nomination passed but target was invalid or already dead."
+                if yes_count > leading_nom["yes"]:
+                    leading_nom = {"id": nomination, "yes": yes_count}
+                    tie = False
+                elif yes_count == leading_nom["yes"]:
+                    # exact tie -> neither will be killed
+                    leading_nom = None
+                    tie = True
+
+        # continue loop to allow further nominations until time expires
+
+    # After nomination rounds complete, apply final outcome
+    if leading_nom and not tie and leading_nom.get("yes", 0) >= threshold:
+        target = next((p for p in players if p.get("id") == leading_nom["id"]), None)
+        if target and not target.get("dead"):
+            target["dead"] = True
+            announcement_text = f"Player {leading_nom['id']} ({target.get('name')}) was lynched by vote."
+            print(announcement_text)
         else:
-            print(f"No majority: {tally['yes']}/{threshold} yes votes; nomination fails.")
-            announcement_text = f"No majority: {tally['yes']}/{threshold} yes votes; nomination failed."
+            announcement_text = "Nomination passed but target was invalid or already dead."
+    else:
+        if tie:
+            announcement_text = "Tie between top nominees; no lynch." 
+            print(announcement_text)
+        else:
+            announcement_text = "No majority reached during the day; no lynch."
+            print(announcement_text)
 
     # Attach the announcement text so the subsequent night messages can include
     # the day's result; this will be read by `get_night_actions` when composing
@@ -230,8 +330,8 @@ def get_day_voting(
     nominated_id: int,
     message_handler: Optional[MessageHandler] = None,
     email_handler: Optional[EmailHandler] = None,
-    poll_every: int = 1,
-    poll_for: int = 60,
+    poll_every: Optional[int] = None,
+    poll_for: Optional[int] = None,
 ) -> List[Optional[str]]:
     """Announce the nomination and collect votes from all players.
 
@@ -287,6 +387,10 @@ def get_day_voting(
         message_handler.max_player_id = len(players)
 
     # Send vote requests and collect free-text responses in `responseBody`.
+    # Use provided polling values or fall back to shared defaults
+    poll_every = poll_every if poll_every is not None else DEFAULT_POLL_EVERY
+    poll_for = poll_for if poll_for is not None else DEFAULT_POLL_FOR
+
     responses = message_handler.send_and_resolve_all(messages, poll_every=poll_every, poll_for=poll_for)
 
     # Map responses back to players order. For players who were not eligible
