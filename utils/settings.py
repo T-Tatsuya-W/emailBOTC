@@ -11,4 +11,4 @@ Note: callers may override these by passing explicit values to
 DEFAULT_POLL_EVERY = 5
 
 # Total seconds to poll before giving up
-DEFAULT_POLL_FOR = 60 * 5
+DEFAULT_POLL_FOR = 60 * 1
